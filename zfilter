@@ -22,32 +22,36 @@
 # I'll ignore you.  
 
 # Program identification information
-$version  = "2.2";
-$released = "Jan 25, 1997";
+$version  = "2.7";
+$released = "Mar 25, 1997";
 
 ######################################################################
 # The ONLY really potential user-configurable stuff is here unless
 # you really want to play with the code. 
+# Most of these defaults can be set in the config file
 
 # Set main vars. to defaults.
-($uname, $x, $x, $x, $x, $x, $x, $udir, $x) = getpwuid($>);
+&reset_user($>);
 
 # Don't forward or send canned to these addresses or w/ these subjects
 @no_resp_from = ("serv\$", "server", "daemon", "root");
 @no_resp_subj = ("server", "serv\$", "automated", "filter");
+# Commands that should care about it.
+@no_resp_cmds = ("bounce","canned","forward","mail");
 
 # Command aliases.  Command on left replaced with command on right.
 @cmd_aliases = ("ignore:leave",   "annotate:addheader","strip:remheader",
 		"keep:keepheader","translate:xlate",   "tr:xlate",
 		"run:execute",    "write:saveover",    "purify:xheader",
-		"pass:xcontent",  "feed:xmessage",     "protect:mode");
-# Basic files (can't be changed by "set", but can be set on command line)
-$defaults_file = sprintf("%s/.zfdefaults", $udir);
-$prmnt_file    = sprintf("%s/.zfprmnt", $udir);
-$temp_file     = sprintf("%s/.zftemp", $udir);
+		"pass:xcontent",  "feed:xmessage",     "protect:mode",
+		"require:load",	  "get:load",          "subst:replace",
+		"rem:comment",    "log:comment",       "#:comment",
+		"biff:page",	  "annoy:page",        "resultto:mailresult",
+		"result:mailresult");
 
-$list_dir      = sprintf("lists", $udir);
-$mail_prog     = sprintf("/usr/bin/mail");
+# Basic files (can't be changed by "set", but can be set on command line)
+
+$mail_prog     = sprintf("/usr/sbin/sendmail");
 $news_prog     = sprintf("/usr/contrib/lib/news/inews");
 
 # ZFilter's default location if it can't find itself.  This is 
@@ -58,19 +62,36 @@ $default_loc   = "/usr/local/bin";
 # Spit something descriptive at PS
 $zero = $0; $0 = "Mail ZFilter";
 
+# Mode for creating dbm files and folders
+$PMODE = 0600;
+umask 0;
+
+# Set this to "0" to disable flock(2) for file-locking 
+# (Zfilter will use an internal method)
+$USE_FLOCK = 0;
+
+# For the internal file-locking mechanism
+$LOCK_ATTEMPTS = 22; # Number of attempts to make to open a file if locked
+$LOCK_INTERVAL = 3;  # Number of seconds between attempts
+
+# ZFilter's subject line for panic error messages
+$ERR_MSG_SUBJ = "ZFilter mail delivery error";
+
 # Defaults for variables.  If you add a MAILENV key and var here,
 # Zfilter will give the user a chance to define it themselves in
 # setup (zfilter -c)  
 # DON'T play with the key names unless you REALLY want to change it
 # everywhere else too.  These are all used quite a bit.
 $MAILENV{'rules_file'} = ".zfrules";
-$MAILENV{'inbox'} = sprintf("/var/mail/%s",$uname);
+# Inbox by &reset_user function
+#$MAILENV{'inbox'} = sprintf("/var/mail/%s",$uname);
 $MAILENV{'log_file'} = "filter-log";
 $MAILENV{'mail_subj'} = "ZFilter Mail";
 $MAILENV{'fwd_mail_subj'} = "ZFilter Forwarded Mail";
 $MAILENV{'list_mail_subj'} = "ZFilter List Mail";
 $MAILENV{'local_host'} = "";
-$MAILENV{'base_dir'} = sprintf("%s/", $udir);
+# Base dir by &reset_user function
+#$MAILENV{'base_dir'} = sprintf("%s/", $udir);
 $MAILENV{'chain_threshold'} = 30;
 $MAILENV{'list_dir'} = $list_dir;
 $MAILENV{'mail_prog'} = "";
@@ -86,13 +107,19 @@ $MAILENV{'news_prog'} = "";
 $act_summary   = ".zfilter-asum";
 $mail_summary  = ".zfilter-msum";
 
-# Just defined so you know it's used somewhere.  Don't touch it.
-# (Used by the various list functions)
-$WHO = "";  
+if($USE_FLOCK) { $LOCK_EX = 2; $LOCK_UN = 8; }
 
-# Mode for creating dbm files
-$PMODE = "0700";
-umask 0;
+# Set signal handling
+$SIG{'HUP'}  = 'sig_handler';  # nice exit, dump message
+$SIG{'INT'}  = 'sig_handler';  # nice exit, dump message
+$SIG{'QUIT'} = 'sig_handler';  # nice exit, dump message
+$SIG{'ABRT'} = 'sig_handler';  # delete locks, exit, don't dump message
+$SIG{'TERM'} = 'sig_handler';  # nice exit, dump message
+$SIG{'ALRM'} = 'sig_handler';  # abort attempt to flock, forget opening file
+$SIG{'KILL'} = 'sig_handler';  # As if.  :)
+$SIGABRT_SET = 0;          # Don't mess with it!
+
+@ERRORS = ();
 
 # Find out what the program is called at the moment.
 # Shame on you if you've renamed it from "Zfilter"!
@@ -131,9 +158,9 @@ if(! $MAILENV{'real_sender'}) {
 &do_extras;		# And make the nice extra vars. from the read-in ones
 
 # Grab the ".signature" file
-open(SIG, &real_file(".signature"));
+&zopen(SIG, &real_file(".signature"));
 while(<SIG>) { $MAILENV{'signature'} .= $_; }
-close(SIG);
+&zclose(SIG);
 
 if(! -r &real_file($MAILENV{'rules_file'}) ) { 
    &save_to("$MAILENV{'inbox'}"); exit; 
@@ -150,18 +177,26 @@ $last_ok = 1; $save_at_end = 1; $some_action = 0;
 sub read_rules {
   local($rules_file) = @_;
   $rules_file = &real_file($rules_file);
-  local($rule, $line, $expr, $actions, $rulenum);
+  local($rule, $line, $expr, $actions, $rulenum, $test);
 
-  if(!open( RULE_FILE, &rules_file) ) { return 0; }
+  foreach $test (@RULES_FILES) {
+    if( $test eq $rules_file ) { 
+     &log("  ${indent}Can't read rules file \"$rules_file\".  It is already in use.");
+     return 1;
+    }
+  }
+  push(@RULES_FILES, $rules_file);
+
+  if(!&zopen( RULE_FILE, $rules_file) ) { return 0; }
   local(@RULES) = <RULE_FILE>;
-  close( RULE_FILE );
+  &zclose( RULE_FILE );
 
   # Rules file loop.
   foreach $rule (@RULES) {
     if( !(($rule =~ /^#/) || $DIE ) ) {
      if( ! $DIE && 
 	   (($rule =~ /^if\s*\(([^)]*)\)\s*(.*)$/i) ||
-            ($rule =~ /^if\s*(.*)\s*then\s*(.*)$/i)) ) {
+            ($rule =~ /^if\s+(.*)\s+then\s+(.*)$/i)) ) {
       $expr = $1; $actions = $2; $rulenum++; $line++;
       if( &true_expr( $expr ) ) { 
          &take_action( $actions ); 
@@ -197,85 +232,165 @@ if( !( $MODE{'no_action'} ) ) {
 # delete, savecopy, save (savecopy+delete), execute, forward, leave | ignore
 # canned, stop, set, pipe, pipecontent, mail, bounce, name, setheader
 # addlist, remlist, maillist, addheader, remheader, take, keepheader, xlate
-# create, zap, inc, dec, pinc, pdec, post, process, saveover
-# xheader, xcontent, xmessage, resync, umask, mode, protect
+# create, zap, inc, dec, pinc, pdec, post, process, saveover, comment
+# xheader, xcontent, xmessage, resync, umask, mode, unique, do, load, quote
+# mailresult
 
 sub take_action {
     local($expr) = @_;
-    local($command, $cmd, @cmds, $val, $ACTION, $indent, $alias, $a, $b); 
+    local($command, $cmd, @cmds, $val, $ACTION, $alias, $a, $b); 
+    local(@TEMP, $word, @all);
+    local($DONT) = $MODE{'no_action'};
     @cmds = split(/; */, $expr);
     foreach $cmd (@cmds) {
-	($command, $arg, @all) = split(/\s+/, $cmd); 
-	if( ($command =~ /^\s*then\s*$/i) ) {
-	   $command = $arg; $arg = shift(@all); 
+
+	# Second gen. command parser!  :) 
+	# Find, and parse out quoted text
+	while( $cmd =~ /\"([^"]*)\"/ ) {
+  	  $a = $1; push( @TEMP, $a ); $b = "\"$a\"";
+  	  $cmd =~ s/$b/ _#_ /;
 	}
-	$command =~ tr/A-Z/a-z/; $real_arg = &real_file($arg); $ACTION = "";
+	# Put it back, w/variable interpolation
+	foreach $word (split(/\s+/, $cmd)) {
+  	  if( $word eq "_#_" ) { push(@all, shift(@TEMP)); }
+	  elsif( $word =~ /^\?(.+)$/ ) { push(@all, $MAILENV{$1}); }
+  	  else { push(@all, $word); }
+	}
+
+	$command = shift(@all); 
+        if($command =~ /\s/) {
+	  @all = (split(/\s+/, $command), @all);
+	  $command = shift(@all);
+	}
+	$arg = shift(@all); $command =~ tr/A-Z/a-z/; 
+	$real_arg = &real_file($arg); $ACTION = "";
 
 	# Aliased commands
 	foreach $alias (@cmd_aliases) {
 	  ($a, $b) = split(/:/, $alias);
 	  if($command eq $a) { $command = $b; }
 	}
-
-	if($command eq "delete") {
+	
+	if ( &dont_respond && ! &respond_ok ) {
+	  $ACTION = "Can't \"$command\" to this message possibly from another filter.";
+	} elsif( $command eq "addheader" ) {
+	  $val = join(" ", @all);
+	  $ACTION = "Added header variable \"$arg\" with \"$val\".";
+	  &add_header("$arg: $val\n") if ! $DONT;
+	} elsif( $command eq "addlist" ) {
+	  $ACTION = "Added $MAILENV{'real_sender'} to list \"$arg\".";
+	  &add_list($arg, $MAILENV{'real_sender'}) if ! $DONT;
+	} elsif( $command eq "bounce" ) {
+	  $ACTION = "Bounced to \"$arg\".";
+	  &mail($arg, $MAILENV{'fwd_mail_subj'},@ORG_MSG) if ! $DONT;
+	  $save_at_end = 0 if ! $DONT;
+	} elsif( $command eq "canned" ) {
+	  $ACTION="Sent canned reply \"$arg\" to $MAILENV{'real_sender'}.";
+	  &mail_canned($real_arg, $MAILENV{'real_sender'}) if ! $DONT;
+	} elsif( $command eq "comment" ) {
+	  $arg = join(" ", $arg, @all);
+	  $ACTION=$arg;
+	} elsif( $command eq "create" ) {
+	  $val = shift(@all);
+	  $ACTION = "Created permanent variable: \"$arg\" = \"$val\".";
+	  $PRMNT{$arg} = $val if ! $DONT; $MAILENV{$arg} = $val;
+	} elsif( $command eq "dec" ) {
+	  $ACTION = "Decremented \"$arg\".";
+	  $MAILENV{$arg}--;
+	} elsif($command eq "delete") {
 	  $ACTION = "Deleted message.";
-	  $save_at_end = 0 if ! $MODE{'no_action'};
+	  $save_at_end = 0 if ! $DONT;
+	} elsif( $command eq "do" ) {
+	  $a = join(" ",@all);
+	  $ACTION = "Ran internal routine \"$arg $a\".";
+	  &$arg(@all);	
+	} elsif( $command eq "execute" ) {
+	  $val = join(" ", @all);
+	  $ACTION = "Executed command \"$arg $val\"";
+	  &run_to("$real_arg $val") if ! $DONT;
+	} elsif( $command eq "forward" ) {
+	  $ACTION = "Forwarded to \"$arg\".";
+	  &mail($arg,$MAILENV{'fwd_mail_subj'},@ORG_MSG) if ! $DONT;
+	} elsif( $command eq "inc" ) {
+	  $ACTION = "Incremented \"$arg\"."; 
+	  $MAILENV{$arg}++;
+	} elsif( $command eq "keepheader" ) {
+	  unshift(@all, $arg);	
+	  $ACTION = sprintf("Stripped header except for variables \"%s\".", join(",", @all));
+	  &keep_header(@all) if ! $DONT;
 	} elsif( $command eq "leave" ) {
 	  $ACTION = "Saved to Inbox.";
-	  $save_at_end = 1 if ! $MODE{'no_action'};
-	} elsif( $command eq "savecopy" ) {
-	  $ACTION = "Saved copy to folder \"$arg\".";
-	  $save_at_end = 1 if ! $MODE{'no_action'};
-	  &save_to($real_arg) if ! $MODE{'no_action'};
-	} elsif( $command eq "saveover" ) {
-	  $ACTION = "Cleared folder \"$arg\" and saved copy to it.";
-	  &save_over($real_arg) if ! $MODE{'no_action'};
-        } elsif( $command eq "save" ) {
-	  $ACTION = "Saved to folder \"$arg\" and removed from inbox.";
-	  $save_at_end = 0 if ! $MODE{'no_action'};
-	  &save_to($real_arg) if ! $MODE{'no_action'};
+	  $save_at_end = 1 if ! $DONT;
+	} elsif( $command eq "load" ) {
+	  $ACTION = "Loaded perl file \"$arg\".";
+	  require($real_arg);
+	} elsif( $command eq "mail" ) {
+	  $val = shift(@all);
+          $ACTION="Sent reply file \"$arg\" to $val.";
+	  &mail_canned($real_arg,$val) if ! $DONT;
+	} elsif( $command eq "maillist" ) {
+	  $ACTION = "Mailed incoming message to list \"$arg\".";
+	  &send_to_list($arg) if ! $DONT;
+        } elsif( $command eq "mailresult" ) {
+	  $ACTION = "Mailed output of last program to \"$arg\".";
+ 	  &mail_result($arg);
+	} elsif( $command eq "mode" ) { 
+	  $ACTION = "Set mode for saved folders to \"$arg\".";
+	  $PMODE = $arg;
 	} elsif( $command eq "name" ) {
 	  $arg = join(" ",$arg, @all);
 	  $ACTION = "Tagged message as coming from \"$arg\".";
 	  &set_from($arg);
-        } elsif( $command eq "stop" ) {
-	  $ACTION = "Stopped processing.";
-	  $DIE = 1;
-	} elsif( $command eq "addlist" ) {
-	  $ACTION = "Added $MAILENV{$real_sender} to list \"$arg\".";
-	  &add_list($arg, $MAILENV{$real_sender}) if ! $MODE{'no_action'}; 
-	} elsif( $command eq "remlist" ) {
-	  $ACTION = "Removed $MAILENV{$real_sender} from list \"$arg\".";
-	  &del_list($arg, $MAILENV{$real_sender}) if ! $MODE{'no_action'};
-	} elsif( $command eq "maillist" ) {
-	  $ACTION = "Mailed incoming message to list \"$arg\".";
-	  &send_to_list($arg) if ! $MODE{'no_action'};
-	} elsif( $command eq "canned" && &respond_ok) {
-	  $ACTION="Sent canned reply \"$arg\" to $MAILENV{'real_sender'}.";
-	  &send_canned($real_arg) if ! $MODE{'no_action'};
-	} elsif( $command eq "mail" && &respond_ok) {
-	  $val = shift(@all);
-          $ACTION="Sent reply file \"$arg\" to $val.";
-	  &mail_canned($real_arg,$val) if ! $MODE{'no_action'};
-	} elsif( $command eq "pipecontent" ) {
-	  $val = join(" ", @all);
-	  $ACTION="Piped message content to \"$arg $val\" ";
-	  &run_content("$real_arg $val") if ! $MODE{'no_action'};
+	} elsif( $command eq "page" ) {
+	  $arg = join(" ",$arg, @all);
+	  $ACTION = "Sent page \"$arg\".";
+	  &page($arg);
+	} elsif( $command eq "pdec" ) {
+	  $ACTION = "P-Decremented \"$arg\".";
+	  $PRMNT{$arg}-- if ! $DONT; $MAILENV{$arg}--;
+	} elsif( $command eq "pinc" ) {
+	  $ACTION = "P-Incremented \"$arg\".";
+	  $PRMNT{$arg}++ if ! $DONT; $MAILENV{$arg}++; 
 	} elsif( $command eq "pipe" ) {
 	  $val = join(" ", @all);
 	  $ACTION="Piped to command \"$arg $val\" ";
-	  &run_through("$real_arg $val") if ! $MODE{'no_action'};
-	} elsif( $command eq "execute" ) {
+	  &run_through("$real_arg $val",@ORG_MSG) if ! $DONT;
+	} elsif( $command eq "pipecontent" ) {
 	  $val = join(" ", @all);
-	  $ACTION = "Executed command \"$arg $val\"";
-	  &run_to("$real_arg $val") if ! $MODE{'no_action'};
-	} elsif( $command eq "bounce" && &respond_ok ) {
-	  $ACTION = "Bounced to \"$arg\".";
-	  &send_orig($arg) if ! $MODE{'no_action'};
-	  $save_at_end = 0 if ! $MODE{'no_action'};
-	} elsif( $command eq "forward" && &respond_ok ) {
-	  $ACTION = "Forwarded to \"$arg\".";
-	  &send_orig($arg) if ! $MODE{'no_action'};
+	  $ACTION="Piped message content to \"$arg $val\" ";
+	  &run_through("$real_arg $val",$MAILENV{'content'}) if ! $DONT;
+	} elsif( $command eq "post" ) {
+	  $ACTION = "Posted message to newsgroup(s) \"$arg\".\n";
+	  &post($arg) if ! $DONT;
+	} elsif( $command eq "process" ) {
+	  $ACTION = "(Processing different rules file \"$arg\")";
+	  $READING++; &read_rules($real_arg); $READING--;
+	} elsif( $command eq "quote" ) {
+	  $ACTION = "Quoted variable \"$arg\"";
+	  &quote_var($arg);
+	} elsif( $command eq "remlist" ) {
+	  $ACTION = "Removed $MAILENV{'real_sender'} from list \"$arg\".";
+	  &del_list($arg, $MAILENV{'real_sender'}) if ! $DONT;
+	} elsif( $command eq "replace" ) { 
+	  $cmd =~ /^\s*\S+\s+\S+\s*(.*)$/; $val2 = $1;
+	  $val = @all[0]; $val2 = @all[1];
+	  $ACTION="Replaced \"$val\" with \"$val2\" in variable \"$arg\".";
+	  $MAILENV{$arg} =~ s/$val/$val2/ge;
+	} elsif( $command eq "resync" ) {
+	  $ACTION="Resynchronized message header and variables.";
+	  &resync_vars;
+        } elsif( $command eq "save" ) {
+	  $ACTION = "Saved to folder \"$arg\" and removed from inbox.";
+	  $save_at_end = 0 if ! $DONT;
+	  &save_to($arg) if ! $DONT;
+	} elsif( $command eq "savecopy" ) {
+	  $ACTION = "Saved copy to folder \"$arg\".";
+	  $save_at_end = 1 if ! $DONT;
+	  &save_to($arg) if ! $DONT;
+	} elsif( $command eq "saveover" ) {
+	  $ACTION = "Cleared folder \"$arg\" and saved copy to it.";
+	  &zap_file($real_arg) if ! $DONT;
+	  &save_to($arg) if ! $DONT;
 	} elsif( $command eq "set" ) {
 	  $val = join(" ", @all);
 	  $ACTION = "Set \"$arg\" to \"$val\".";
@@ -283,79 +398,50 @@ sub take_action {
 		$val .= "/"; $val =~ s/\s+//g;
 	  } 
 	  $MAILENV{$arg} = $val;
-	} elsif( $command eq "create" ) {
-	  $val = shift(@all);
-	  $ACTION = "Created permanent variable: \"$arg\" = \"$val\".";
-	  $PRMNT{$arg} = $val if ! $MODE{'no_action'}; $MAILENV{$arg} = $val;
-  	} elsif( $command eq "zap" ) {
-	  $ACTION = "Set \"$arg\" to non-permanent.";
-	  delete $PRMNT{$arg} if ! $MODE{'no_action'}; 
-	} elsif( $command eq "inc" ) {
-	  $ACTION = "Incremented \"$arg\"."; 
-	  $MAILENV{$arg}++;
-	} elsif( $command eq "dec" ) {
-	  $ACTION = "Decremented \"$arg\".";
-	  $MAILENV{$arg}--;
-	} elsif( $command eq "pinc" ) {
-	  $ACTION = "P-Incremented \"$arg\".";
-	  $PRMNT{$arg}++ if ! $MODE{'no_action'}; $MAILENV{$arg}++; 
-	} elsif( $command eq "pdec" ) {
-	  $ACTION = "P-Decremented \"$arg\".";
-	  $PRMNT{$arg}-- if ! $MODE{'no_action'}; $MAILENV{$arg}--;
-	} elsif( $command eq "addheader" ) {
-	  $val = join(" ", @all);
-	  $ACTION = "Added header variable \"$arg\" with \"$val\".";
-	  &add_header("$arg: $val\n") if ! $MODE{'no_action'};
-	} elsif( $command eq "remheader" ) {
-	  $ACTION = sprintf("Removed header variables \"%s\" from header.", join(",", @all));
-	  &remove_header(@all) if ! $MODE{'no_action'};
 	} elsif( $command eq "setheader" ) {
 	  $val = join(" ", @all);
 	  $ACTION = "Set header variable \"$arg\" to \"$val\".";
-	  &set_header($arg, $val) if ! $MODE{'no_action'};
-	} elsif( $command eq "xlate" ) {
-	  $ACTION="X-lated \"$all[1]\" to \"$all[2]\" in variable \"$all[0]\".";
-	  $MAILENV{$all[0]} =~ tr/$all[1]/$all[2]/;
-	} elsif( $command eq "xheader" ) {
-	  $val = join(" ", @all);
-	  $ACTION="Passed header to program \"$arg $val\" and replaced it.";
- 	  &get_header("$real_arg $val");	
-	} elsif( $command eq "xmessage" ) {
-	  $val = join(" ", @all);
-	  $ACTION="Passed message to program \"$arg $val\" and replaced it.";
-	  &get_message("$real_arg $val");
+	  &set_header($arg, $val) if ! $DONT;
+        } elsif( $command eq "stop" ) {
+	  $ACTION = "Stopped processing.";
+	  $DIE = 1;
+	} elsif( $command eq "take" ) { 
+	  $ACTION = "(Taking actions based on output of last command)";
+	  $SUBBING++; &take_action($MAILENV{'result'});
+	} elsif( $command eq "umask" ) {
+	  $ACTION = "Set process umask to \"$arg\".";
+	  umask $arg;
+	} elsif( $command eq "unique" ) {
+	  if(&unique($real_arg)) {
+	     $ACTION = "(Unique) Saved copy to folder \"$arg\".";
+	     &save_to($arg) if ! $DONT;
+	  } else {
+	     $ACTION = "(Content not unique)";
+	  }
 	} elsif( $command eq "xcontent" ) {
 	  $val = join(" ", @all);
 	  $ACTION="Passed message body to program \"$arg $val\" and replaced it.";
 	  &get_content("$real_arg $val");
-	} elsif( $command eq "resync" ) {
-	  $ACTION="Resynchronized message header and variables.";
-	  &resync_vars;
-	} elsif( $command eq "keepheader" ) {
-	  unshift(@all, $arg);	
-	  $ACTION = sprintf("Stripped header except for variables \"%s\".", join(",", @all));
-	  &keep_header(@all) if ! $MODE{'no_action'};
-	} elsif( $command eq "take" ) { 
-	  $ACTION = "(Taking actions based on output of last command)";
-	  $SUBBING++;
-	  &take_action($MAILENV{'result'});
-	} elsif( $command eq "process" ) {
-	  $ACTION = "(Processing different rules file \"$arg\")";
-	  $READING++;
-	  &read_rules($real_arg); $READING--;
-	} elsif( $command eq "post" ) {
-	  $ACTION = "Posted message to newsgroup(s) \"$arg\".\n";
-	  &post($arg) if ! $MODE{'no_action'};
-	} elsif( $command eq "mode" ) { 
-	  $ACTION = "Set mode for saved folders to \"$arg\".";
-	  $PMODE = $arg;
-	} elsif( $command eq "umask" ) {
-	  $ACTION = "Set process umask to \"$arg\".";
-	  umask $arg;
+	} elsif( $command eq "xheader" ) {
+	  $val = join(" ", @all);
+	  $ACTION="Passed header to program \"$arg $val\" and replaced it.";
+ 	  &get_header("$real_arg $val");	
+	} elsif( $command eq "xlate" ) {
+	  $val = $all[0];
+	  if($all[2]) { $a = $all[1]; $b = $all[2]; }
+	  elsif($all[1] =~ /\//) { ($a, $b) = split(/\//, $all[1]); }
+	  else { $a = $all[1]; $b = ""; }
+	  $ACTION="X-lated \"$a\" to \"$b\" in variable \"$arg\".";
+	  $MAILENV{$arg} =~ tr/$a/$b/;
+	} elsif( $command eq "xmessage" ) {
+	  $val = join(" ", @all);
+	  $ACTION="Passed message to program \"$arg $val\" and replaced it.";
+	  &get_message("$real_arg $val");
+  	} elsif( $command eq "zap" ) {
+	  $ACTION = "Set \"$arg\" to non-permanent.";
+	  delete $PRMNT{$arg} if ! $DONT;
 	} elsif( ! $command ) {
 	  $ACTION = "";  # an extra semi-colon.  Who cares?
-	} elsif ( ($command eq "canned") || ($command eq "forward") ) {
-	  $ACTION = "";  # ignore mail from other filters.
 	} elsif ( $command eq "if" ) {
 	  $ACTION = "Possible error in rule-file.  \"If\" command ignored.";
 	} else {
@@ -373,15 +459,18 @@ sub log {
    local($logging) = @_;
    if( $MODE{'quiet'} ) { return; }
    $lgf = sprintf(">>%s", &real_file($MAILENV{'log_file'}));
-   open(LOGFILE, $lgf);
-   print LOGFILE "$logging\n";
+   if( $logging =~ /\n$/ ) { chop $logging; }
+   if(&zopen(LOGFILE, $lgf)) {
+     print LOGFILE "$logging\n";
+     &zclose(LOGFILE);
+   }
    if( $MODE{'log_out'} ) {
 	$outfile = sprintf(">%s", $MODE{'out_to'} ? $MODE{'out_to'} : "-" );
-	open( PRINT_TO, $outfile );
-	print PRINT_TO "$logging\n";
-	close( PRINT_TO );
+	if(&zopen( PRINT_TO, $outfile )) {
+	  print PRINT_TO "$logging\n";
+	  &zclose( PRINT_TO );
+	}
    }
-   close(LOGFILE);
 }
 
 sub post {
@@ -399,20 +488,20 @@ sub post {
      &add_header("Keywords: $summary\n");
    }
    if(!$MAILENV{'summary'}) { 
-     &add_header("Summary: ");
+     &add_header("Summary: \n");
    }
-   &add_header("Newsgroups: $groups");
-   open( DUMP, "| $news_prog -h" );
-   print DUMP join("", @ORG_MSG);
-   close( DUMP );
+   &add_header("Newsgroups: $groups\n");
+   if(&zopen( DUMP, "| $news_prog -h" )) {
+     print DUMP join("", @ORG_MSG);
+     &zclose( DUMP );
+   }
 }
 
 sub reset_sum {
    local($log_dir);
    if( &real_file($MAILENV{'log_file'}) =~ /(.+\/).*/ ) { $log_dir = $1; }
    print "Resetting Summaries...";
-   open(LOGSUM, ">${log_dir}$act_summary"); close(LOGSUM);
-   open(LOGMSM, ">${log_dir}$mail_summary"); close(LOGMSM);
+   &zap_file("$log_dir$act_summary"); &zap_file("$log_dir$mail_summary");
    print "Done.\n";
 }
 
@@ -420,114 +509,126 @@ sub reset_all {
    local($lgf) = $lgf = sprintf(">%s", &real_file($MAILENV{'log_file'}));
    &reset_sum; 
    print "Resetting Logs and permanent variables...";
-   open(LOGFILE, $lgf); close(LOGFILE);
-   open(PRMNT, ">$prmnt_file"); close(PRMNT);
+   &zap_file(&real_file($MAILENV{'log_file'})); &zap_file($prmnt_file);
    print "Done.\n";
+}
+
+sub quote_var {
+   local($var) = @_;
+   local(@lines) = split(/\n/,$MAILENV{$var});
+   local($line);
+   foreach $line (@lines) {
+     $line = sprintf("> %s",$line);
+   }
+   $MAILENV{$var} = join("",@lines);
 }
 
 sub clear_log {
    local($logging) = @_;
-   local($log_dir,$act,$lgf,$logline);
-   $lgf = sprintf(">%s", &real_file($MAILENV{'log_file'}));
+   local($log_dir,$act,$logline);
    if( &real_file($MAILENV{'log_file'}) =~ /(.+\/).*/ ) { $log_dir = $1; }
    
    print "Reading log file...";
-   open(LOGFILE, &real_file($MAILENV{'log_file'}));
-   dbmopen(LOGSUM, "${log_dir}$act_summary",0600);
-   dbmopen(LOGMSM, "${log_dir}$mail_summary",0600);
-   print "\nSummarizing.";
-   while(<LOGFILE>) {
+   if(&lock("${log_dir}$act_summary") || &lock("${log_dir}$mail_summary")) {
+	print "Summary files are in use.  Try again later.\n";
+	return;
+   }
+   if(&zopen(LOGFILE, &real_file($MAILENV{'log_file'}))) {
+     dbmopen(LOGSUM, "${log_dir}$act_summary",0600);
+     dbmopen(LOGMSM, "${log_dir}$mail_summary",0600);
+     print "\nSummarizing.";
+     while(<LOGFILE>) {
 	$logline = $_;
 	if( $logline =~ /^\s+\(Line \d+\): (.+)$/ ) {
-	   $act = $1; $act =~ s/(Sent .+) to .+$/$1/; $act =~ s/\s+\"\s*$/"/;
+	   $act = $1; $act =~ s/(Sent .+) to .+$/$1/; 
+	   $act =~ s/\S+ (to list \S+)$/$1/;
+	   $act =~ s/\S+ (from list \S+)$/$1/;
+           $act =~ s/\s+\"\s*$/"/;
 	   $LOGSUM{$act}++ if (  !( $act =~ /^Stopped processing/ ) && !( $act =~ /^Possible error/) );
 	   print ".";
 	} elsif ( $logline =~ /^Mail from (\S*) /i ) {
 	   $act = $1; $LOGMSM{$act}++;
 	   print "o";
 	}
+     }
+     dbmclose(LOGSUM); dbmclose(LOGMSM); &zclose(LOGFILE);
+     &unlock("${log_dir}$mail_summary"); &unlock("${log_dir}$mail_summary");
+     print "\nClearing...";
+     &zap_file(&real_file($MAILENV{'log_file'}));
+     print "Done.\n";
+   } else {
+     print "\nCan't open log file.  A file lock exists.\n"; 
    }
-   dbmclose(LOGSUM); dbmclose(LOGMSM);
-   print "\nClearing...";
-   open(LOGFILE, $lgf); close(LOGFILE);
-   print "Done.\n";
 }
 
+# Abbreviated mail_canned; mails the output of a program to specified user
+sub mail_result {
+   local($to) = @_;
+   &mail($to,$MAILENV{'mail_subj'},$MAILENV{'result'}); 
+}
 
 # sends a canned reply to sender (accepts the file to send)
-sub send_canned {
-   local($canned_resp) = @_;
-   local(@FORM_RESP, $form);
-   open( FORMLTR, $canned_resp );
-   @FORM_RESP = <FORMLTR>;
-   close(FORMLTR);
-   foreach $form (@FORM_RESP) {
-	$form =~ s/\{([^\}\s]*)\}/$MAILENV{$1}/g;
-   }
-   open( DUMP, "| $mail_prog -s \"$MAILENV{'mail_subj'}\" $MAILENV{'real_sender'}" );
-   print DUMP join("", @FORM_RESP);
-   close( DUMP );
-}
-
 sub mail_canned { 
    local($canned_resp, $to) = @_;
-   local(@FORM_RESP, $form);
-   open( FORMLTR, $canned_resp );
-   @FORM_RESP = <FORMLTR>;
-   close(FORMLTR);
-   foreach $form (@FORM_RESP) {
-	$form =~ s/\{([^\}\s]*)\}/$MAILENV{$1}/g;
+   local($form, $lvar, $rep, $n, $act, $temp);
+   if(&zopen( FORMLTR, $canned_resp )) {
+     local(@FORM_RESP) = <FORMLTR>;
+     &zclose(FORMLTR);
+     foreach $form (@FORM_RESP) {
+       while( $form =~ /\{([^\}\s]*)\}/ ) {
+	$lvar = $1; $rep = $MAILENV{$lvar};
+	if( !$MAILENV{$lvar} && ($lvar =~ /[\#\,]$/) ) {
+	   $n = $MAILENV{$lvar}; $temp = $lvar; $act = "";
+	   # Try and figure out where the variable ends and the options
+           # begin.  :)
+	   while( (! $n) && ($temp) ) {
+	     $temp =~ s/(\S)$//; $act = "$act$1"; $n = $MAILENV{$temp};
+	   }
+	   if( $act =~ /\,/ ) {
+	     while ($n =~ /\d{4}/ ) {
+                $n =~ s/(\d+)(\d{3})/$1,$2/;
+	     }
+	     $rep = $n;
+	   }
+	   if( $act =~ /#/ ) {
+	     if( $n =~ /1$/ ) { $rep = "${n}st"; }
+	     elsif( $n =~ /2$/ ) { $rep = "${n}nd"; }
+	     elsif( $n =~ /3$/ ) { $rep = "${n}rd"; }
+	     elsif( $n =~ /[4567890]$/ ) { $rep = "${n}th"; }
+	   }
+	}
+	$form =~ s/\{$lvar\}/$rep/;
+       }
+     }
+     &mail($to,$MAILENV{'mail_subj'},@FORM_RESP); 
    }
-   open( DUMP, "| $mail_prog -s \"$MAILENV{'mail_subj'}\" $to" );
-   print DUMP join("", @FORM_RESP);
-   close( DUMP );
 }
    
-
 # pipes the mail message through next program.
 sub run_through {
-   local($prog) = @_;
-   local($temp_file, @TMP);
+   local($prog, @stuff) = @_;
+   local(@TMP);
    $prog = sprintf("| %s > %s", $prog, $temp_file);
-   open( PIPETHRU, $prog);
-   print PIPETHRU join("",@ORG_MSG);
-   close( PIPETHRU );
-   open( TEMP, $temp_file );
-   @TMP = <TEMP>;
-   close(TEMP); unlink($temp_file);
-   $MAILENV{'result'} = join("", @TMP);
-}
-
-sub run_content {
-   local($prog) = @_;
-   local($temp_file, @TMP);
-   $prog = sprintf("| %s > %s", $prog, $temp_file);
-   open( PIPETHRU, $prog);
-   print PIPETHRU join("",$MAILENV{'content'});
-   close( PIPETHRU );
-   open( TEMP, $temp_file );
-   @TMP = <TEMP>;
-   close(TEMP); unlink($temp_file);
-   $MAILENV{'result'} = join("", @TMP);
+   if(&zopen( PIPETHRU, $prog)) {
+     print PIPETHRU join("",@stuff);
+     &zclose( PIPETHRU );
+     &zopen( TEMP, $temp_file );
+     @TMP = <TEMP>;
+     &zclose(TEMP); unlink($temp_file);
+     $MAILENV{'result'} = join("", @TMP);
+   }
 }
 
 # just runs the next program... (yes I know this is redundant)
 sub run_to {
    local($prog) = @_;
-   local($temp_file, @TMP);
+   local(@TMP);
    $prog = sprintf("%s |", $prog, $temp_file);
-   open( PIPETO, $prog);
-   @TMP = <PIPETO>;
-   close(PIPETO); unlink($temp_file);
-   $MAILENV{'result'} = join("", @TMP);
-}
-
-# accepts the address of the person(s) to mail to.
-sub send_orig {
-   local($rcpts) = @_;
-   open( PIPETHRU, "| $mail_prog -s \"$MAILENV{'fwd_mail_subj'}\" $rcpts" );
-   print PIPETHRU join("",@ORG_MSG);
-   close( PIPETHRU );
+   if(&zopen( PIPETO, $prog)) {
+     @TMP = <PIPETO>;
+     &zclose(PIPETO); unlink($temp_file);
+     $MAILENV{'result'} = join("", @TMP);
+   }
 }
 
 # Sends the message to everyone on the list
@@ -538,9 +639,7 @@ sub send_to_list {
   if( dbmopen( LIST, "$list_dir/$list", undef ) ) {
 	foreach $key (sort keys %LIST) {
 	  if( $key ne  $MAILENV{'real_sender'} ) {
-   	   open( PIPETHRU, "| $mail_prog -s \"$MAILENV{'list_mail_subj'}\" $rcpts" );
-   	   print PIPETHRU join("",@ORG_MSG);
-   	   close( PIPETHRU );
+	     &mail($key, $MAILENV{'list_mail_subj'}, @ORG_MSG);
 	  }
 	}
   }
@@ -549,79 +648,81 @@ sub send_to_list {
 # accepts the folder to save the mail to.
 sub save_to {
     local($file) = @_;
-    local($status_set) = 0;
-    local($line);
-    if( $file eq &real_file($MAILENV{'inbox'}) ) { local($inbox) = 1; }
-    local($temp) = sprintf(">>%s", $file);
-    open( OUTFILE, $temp );
-    foreach $line (@ORG_MSG) {
-	if( ($line =~ /^$/) && ! $status_set && ! $inbox ) { 
-	   print OUTFILE "Status: O\n"; $status_set = 1;
-	} elsif( ($line =~ /^Status:/) && ! $status_set ) {
-	   $status_set = 1;
-	}
-	print OUTFILE $line;
+    $file = &real_file($file);
+    if( $file eq &real_file($MAILENV{'inbox'}) ) {
+	&remove_header("status");
     }
-    print OUTFILE "\n\n";  # for mail filtering programs.
-    close( OUTFILE ); chmod( $PMODE, $file );
+    local($temp) = sprintf(">>%s", $file);
+    if( &zopen( OUTFILE, $temp ) ) {
+       print OUTFILE join("",@ORG_MSG);
+       print OUTFILE "\n\n";  # for mail filtering programs.
+       &zclose( OUTFILE ); chmod( $PMODE, $file ); 
+    } elsif( $file eq &real_file($MAILENV{'inbox'}) ) {
+       warn "Error saving to inbox!\n";
+       &dead_letter || &send_panic_email;
+    } else { $save_at_end = 1; }
 }
 
-# accepts the folder to save the mail to.
-sub save_over {
+# returns 1 if the content of the current message is unique in the folder
+sub unique {
     local($file) = @_;
-    local($status_set) = 0;
-    local($line);
-    local($temp) = sprintf(">%s", $file);
-    open( OUTFILE, $temp );
-    foreach $line (@ORG_MSG) {
-	if( ($line =~ /^$/) && ! $status_set ) { 
-	   print OUTFILE "Status: O\n"; $status_set = 1;
-	}
-	print OUTFILE $line;
+    local($retval) = 1;
+    if(! $MAILENV{'content'}) { return 1; }
+    if( &zopen( FOLDER, $file ) ) {
+	local($TEMP) = join("", <FOLDER>);
+	&zclose(FOLDER);
+	if( index($TEMP, $MAILENV{'content'}) >= 0 ) { $retval = 0; }
     }
-    print OUTFILE "\n\n";  # for mail filtering programs.
-    close( OUTFILE ); chmod( $PMODE, $temp);
+    return $retval;
+}
+
+# returns 1 if the content of the message has anything but whitespace
+sub empty {
+    if( $MAILENV{'content'} =~ /\S/ ) { return 1; } else { return 0; }
 }
 
 # Pipe header through prog, get new header.
 sub get_header {
    local($prog) = @_; local(@TMP);
    $prog = sprintf("| %s > %s", $prog, $temp_file);
-   open( PIPETHRU, $prog);
-   print PIPETHRU $MAILENV{'header'};
-   close( PIPETHRU );
-   open( TEMP, $temp_file );
-   @TMP = <TEMP>;
-   close(TEMP); unlink($temp_file);
-   $MAILENV{'header'} = join("", @TMP);
-   &remake_msg;
+   if(&zopen( PIPETHRU, $prog)) {
+     print PIPETHRU $MAILENV{'header'};
+     &zclose( PIPETHRU );
+     &zopen( TEMP, $temp_file );
+     @TMP = <TEMP>;
+     &zclose(TEMP); unlink($temp_file); 
+     $MAILENV{'header'} = join("", @TMP);
+     &remake_msg; 
+   }
 }
 
 # Pipe content through prog, get new content.
 sub get_content {
    local($prog) = @_; local(@TMP);
    $prog = sprintf("| %s > %s", $prog, $temp_file);
-   open( PIPETHRU, $prog);
-   print PIPETHRU $MAILENV{'content'};
-   close( PIPETHRU );
-   open( TEMP, $temp_file );
-   @TMP = <TEMP>;
-   close(TEMP); unlink($temp_file);
-   $MAILENV{'content'} = join("", @TMP);
-   &remake_msg;
+   if(&zopen( PIPETHRU, $prog)) {
+     print PIPETHRU $MAILENV{'content'};
+     &zclose( PIPETHRU );
+     &zopen( TEMP, $temp_file );
+     @TMP = <TEMP>;
+     close(TEMP); unlink($temp_file); 
+     $MAILENV{'content'} = join("", @TMP);
+     &remake_msg;
+   }
 }
 
 # Pipe message through prog, get new message.
 sub get_message {
    local($prog) = @_; local(@TMP);
    $prog = sprintf("| %s > %s", $prog, $temp_file);
-   open( PIPETHRU, $prog);
-   print PIPETHRU $MAILENV{'header'}, $MAILENV{'content'};
-   close( PIPETHRU );
-   open( TEMP, $temp_file );
-   @TMP = <TEMP>;
-   close(TEMP); unlink($temp_file);
-   @ORG_MSG = join("", @TMP);
+   if(&zopen( PIPETHRU, $prog)) {
+     print PIPETHRU $MAILENV{'header'}, $MAILENV{'content'};
+     &zclose( PIPETHRU );
+     &zopen( TEMP, $temp_file );
+     @TMP = <TEMP>;
+     &zclose(TEMP); unlink($temp_file);
+     @ORG_MSG = join("", @TMP);
+   }
 }
 
 
@@ -684,7 +785,6 @@ sub remove_header {
 sub keep_header {
    local(@vars) = @_;
    local($line, $done, $var, $skip, $flag, $val, $val2);
-   print "[",join(",",@vars),"]\n";
    $skip = 1;  # default
    foreach $line (@ORG_MSG) {
 	if(!$done) {  # Haven't reached end-of-header
@@ -723,30 +823,30 @@ sub add_list {
   local($list, $address) = @_;
   $address =~ tr/A-Z/a-z/;
   if( ! -d $list_dir && &make_dir($list_dir)) {
-	die "Can't make list folder ";
+	print "Can't make list folder "; return;
   }
-  dbmopen(LIST, "$list_dir/$list.lst",$PMODE) || die "Can't make list file "; 
+  dbmopen(LIST, "$list_dir/$list.lst",$PMODE) || return;
   $LIST{$address} = 1;
   dbmclose(LIST);
-  print "Added [$address] to list [$list].\n";
+  print "Added \"$address\" to list \"$list\".\n";
 }
 
 # Removes someone from a list
 sub del_list {
   local($list, $address) = @_;
   local($temp); $address =~ tr/A-Z/a-z/;
-  dbmopen(LIST, "$list_dir/$list.lst",undef) || die "Can't read list ";
+  dbmopen(LIST, "$list_dir/$list.lst",undef) || return;
   delete $LIST{$address};
   dbmclose(LIST);
-  print "Removed [$address] from list [$list].\n";
+  print "Removed \"$address\" from list \"$list\".\n";
 }
 
 # Prints out a list
 sub print_list {
   local($list) = @_;
   local($key); 
-  dbmopen(LIST, "$list_dir/$list.lst",undef) || die "Can't open list ";
-  print "Listing addresses in list [$list]:\n";
+  dbmopen(LIST, "$list_dir/$list.lst",undef) || return;
+  print "Listing addresses in list \"$list\":\n";
   foreach $key (sort keys %LIST) {
 	print "$key\n";
   }
@@ -757,12 +857,32 @@ sub print_list {
 sub what_lists { 
   local($address) = @_;
   local($key); $address =~ tr/A-Z/a-z/;
-  print "Checking lists for [$address]...\n";
+  print "Checking lists for \"$address\"...\n";
   &check_what_lists( $address );
   foreach $key (sort keys %MAILENV) {
-	if( $key =~ /^list\.(.+)$/ ) { print "on list [$1]\n"; }
+	if( $key =~ /^list\.(.+)$/ ) { print "on list \"$1\"\n"; }
   }
 }
+
+# Try to page the user if s/he/it is on.
+sub page {
+  local($msg) = @_;
+  if( open(UTMP, "/var/run/utmp") ) {
+    local($utmp) = <UTMP>; close(UTMP);
+    local($i, $port, $user);
+    while($i < length($utmp))  {
+      $port = substr($utmp, $i+0,  8); $port =~ s/[\s\0]+//g;
+      $user = substr($utmp, $i+8, 16); $user =~ s/[\s\0]+//g;
+      if($user eq $uname) {
+        open(PING, ">> /dev/$port");
+        print PING "\a$msg\n";
+        close(PING);
+      }
+      $i += 60;
+    }
+  }
+}
+
 
 # Displays usage
 sub usage {
@@ -772,6 +892,7 @@ Usage: zfilter [command-line options]
 Command-line options are:
    -C  : Engage Config Mode
    -c  : Clear & Summarize Logs
+   -I  : Ignore next argument
    -s  : Display filter activity summary
    -S  : Display filter logs
    -r  : Display rules file
@@ -789,18 +910,19 @@ Other options (available when parsing a message):
    -n  : Not really (take no actions, only display log)
    -q  : Quiet (don't log anything)
    -v  : Log-Out (to stdio or redirected by "-o")
-   -f filename : Use [filename] as the rules file
-   -F filename : Use [filename] as the defaults file
-   -o filename : Also echo logs to [filename] (or device)  
-   -p filename : Use [filename] for permanent data
-   -t filename : Use [filename] as temporary space
+   -U user : Try to run as the user given.  (Only works for root.)
+   -f filename : Use \"filename\" as the rules file
+   -F filename : Use \"filename\" as the defaults file
+   -o filename : Also echo logs to \"filename\" (or device)  
+   -p filename : Use \"filename\" for permanent data
+   -t filename : Use \"filename\" as temporary space
 
 Additionally, the following commands are used to manage lists:
-   -A list address : Adds [address] to the list [list]
-   -D list address : Removes [address] from the list [list]
-   -P list         : Prints all the people on list [list]
+   -A list address : Adds \"address\" to the list \"list\"
+   -D list address : Removes \"address\" from the list \"list\"
+   -P list         : Prints all the people on list \"list\"
    -W address      : Prints all the lists the person is on
-   -L path         : Use [path] to store list information
+   -L path         : Use \"path\" to store list information
 
 Additional information about command-line and other options
 can be found in the ZFilter README file (normally called
@@ -814,19 +936,160 @@ defeating.
 END
 }
 
+sub sig_handler {
+  local($sig) = @_;
+  warn "SIG$sig detected...\n";
+  if($sig eq "ALRM") { $SIGALRM_SET = 1; return; }
+  foreach $handle (sort keys %HANDLES) { &zclose($handle); } 
+  if($sig eq "ABRT") { die "Received SIGABRT.  Exiting... "; }
+  else {
+     &dead_letter || die "Can't dump letter. Exiting... ";
+  }
+  exit;
+} 
+
 ##############################################################
 # Utility subs (stuff that generates data for purely internal use)
 ##############################################################
 
 sub pr {
     local($file) = @_;
-    open( PRINTFILE, $file ) || return;
     $outfile = $MODE{'out_to'} ? sprintf(">%s", $MODE{'out_to'}) : ">-";
-    open( PRINT_TO, $outfile ) || return;
-    while(<PRINTFILE>) { print PRINT_TO; }
-    close(PRINTFILE); close(PRINT_TO);
+    if(&zopen( PRINTFILE, $file ) || &zopen(PRINT_TO, $outfile)) {
+      while(<PRINTFILE>) { print PRINT_TO; }
+      &zclose(PRINTFILE,PRINT_TO);
+    } else { 
+      print "Can't open files for reading."; 
+    }
 }
 
+# Delete a file
+sub zap_file {
+    local($file) = @_;
+    if( &zopen(FILE, ">$file") ) { &zclose(FILE); }
+}
+
+sub reset_user {
+  local($user) = @_;
+  local($x);
+  if( $user =~ /^\d+$/ ) { 
+     ($uname, $x, $x, $x, $x, $x, $x, $udir, $x) = getpwuid($user);
+  } else {
+     ($uname, $x, $x, $x, $x ,$x, $x, $udir, $x) = getpwnam($user);
+  }
+  $defaults_file = sprintf("%s/.zfdefaults", $udir);
+  $prmnt_file    = sprintf("%s/.zfprmnt", $udir);
+  $temp_file     = sprintf("%s/.zftemp.%d", $udir, $$);
+  $list_dir      = sprintf("lists", $udir);
+  $MAILENV{'inbox'} = sprintf("/var/mail/%s",$uname);
+  $MAILENV{'base_dir'} = sprintf("%s/", $udir);
+}
+
+# Lock a file
+sub lock {
+   local($file) = @_;
+   local($attempts, $flock) = ($LOCK_ATTEMPTS, "$file.lock");
+   local($mayday) = $LOCK_ATTEMTPS * $LOCK_INTERVAL * 2;
+   if($SIGALRM_SET) { $SIGALRM_SET = 0; }
+   alarm $mayday;
+   while(!$SIGALRM_SET && $attempts && -e $flock) { 
+       $attempts--; sleep $LOCK_INTERVAL; 
+   }
+   if($SIGALRM_SET) { 
+	push(@ERRORS, "Can't lock file [$file], received SIGALRM.\n"); 
+        $SIGALRM_SET = 0; return 1; 
+   }
+   if($attempts) { open(LOCKFILE, ">$flock"); close(LOCKFILE); return 0; } 
+   else { 
+      push(@ERRORS, "Can't lock file [$file], lock file [$flock] exists.\n");
+      return 1; 
+   }
+}
+
+# Unlock a file
+sub unlock {
+   local($file) = @_;
+   local($flock) = "$file.lock";
+   unlink($flock);
+}
+
+# Procedure for opening a file...
+sub zopen {
+   local($handle, $filename) = @_;
+   local($need_flock, $file) = 0;
+
+   if($filename =~ /^\s*\>+(.+)/) { 
+     $file = $1; $need_flock = 1; 
+   } elsif($filename =~ /^\s*\|\s*\S+\s*\>(.+)/) {
+     $file = $1; $need_flock = 1;
+   }
+
+   if($need_flock && &lock($file)) {
+     &log("Error opening file \"$filename\" - file lock \"$filename.lock\".");
+     return 0;
+   }
+
+   if(!open($handle, $filename)) {
+     push(@ERRORS,"Couldn't open [$filename].\n"); return 0;
+   }
+   if($need_flock) { $HANDLES{$handle} = $file; }
+  
+   # Added security.  Theoretically, this should fend off other programs.
+   # Do NOT use No-Block.  If we close the file now, we lose it!
+   if($need_flock && $USE_FLOCK) { flock($handle, $LOCK_EX); }
+   return 1;
+}
+
+# Proc for closing a file...
+sub zclose {
+   local(@closes) = @_;
+   foreach $handle (@closes) {
+	if($HANDLES{$handle}) {
+	   &unlock($HANDLES{$handle});
+	   if($USE_FLOCK) { flock($handle, $LOCK_UN); }
+	   delete $HANDLES{$handle};
+	}
+	close($handle);
+   }
+}
+
+# Resolves a hostname, returns the IP address
+sub resolve_host {
+  local($hostname) = @_;
+  if($hostname =~ /!/) { return "UUCP"; }
+  if($hostname =~ /^(.+)@(.+)$/) { $hostname = $2; }
+  local(@hostdata) = gethostbyname($hostname);
+  if($hostdata[4]) {
+    return sprintf("%d.%d.%d.%d",unpack('C4', $hostdata[4]));
+  } else {
+    return;
+  }
+}
+   
+# Mail a @ containing a message to the given "to" w/ the given subject
+sub mail {
+   local($to,$subj,@MSG) = @_;
+   if(&zopen( DUMP, "| $mail_prog $to" )) {
+     print DUMP "To: $to\n", "Subject: $subj\n";
+     print DUMP "X-Filtered-By: ZFilter $version\n";
+     print DUMP join("", @MSG);
+     &zclose( DUMP );
+   } else {  
+     &log("Panic!  Can't open mail program!");
+   }
+}
+
+# This is stupid. Is "command" on the @no_resp_cmds list?
+sub dont_respond {
+   local($cmd) = @_;
+   local($test);
+   foreach $test (@no_resp_cmds) {
+	if( $test eq $cmd ) { return 1; }
+   }
+   return 0;
+}
+
+# Return the full pathname
 sub real_file {
    local($filename) = @_;
    local($retfile, $x, $dir, $user);
@@ -845,7 +1108,7 @@ sub real_file {
 }
 
 # Second Generation Parser :)
-# Operators: ! (not), =, !=, >, <, <=, >=, # (regexp pattern search)
+# Operators: ! (not), =, !=, >, <, <=, >=, # (regexp pattern search),
 # and ? (regexp case-insensitive pattern search)
 sub true_expr {
   local($expression) = @_;
@@ -987,7 +1250,7 @@ sub remove {
 
 # Rebuilds ORG_MSG from header and content
 sub remake_msg {
-   @ORG_MSG = ($MAILENV{'header'}, $MAILENV{'content'});
+   @ORG_MSG = ($MAILENV{'header'}, "\n", $MAILENV{'content'});
 }
 
 # Resync message header with variables
@@ -1001,10 +1264,20 @@ sub resync_vars {
 sub parse_mode {
 # Parse args (if any)
   local($ON, $exit, $return) = (1,0,0); 
+  local(@TMP, $at);
   while( ($arg = shift(@ARGV) ) ) {
-    if( $arg eq "-C" ) { $MODE{'config'} = $ON; $exit = 1; }
+    
+    # If multiple args were given with one leading "-"...
+    if( $arg =~ /^-[\w][\w]/ ) {
+      @TMP = split(//, $arg);
+      foreach $at (@TMP) { $at = "-$at"; push(@ARGV, $at); } 
+    }
+
+    elsif( $arg eq "--" ) { } # shut up about it. 
+    elsif( $arg eq "-C" ) { $MODE{'config'} = $ON; $exit = 1; }
     elsif( $arg eq "-c" ) { $MODE{'clear_log'} = $ON; $exit = 1; }
     elsif( $arg eq "-i" ) { $MODE{'ignore_reply_to'} = $ON; }
+    elsif( $arg eq "-I" ) { shift(@ARGV); }
     elsif( $arg eq "-f" ) { $MAILENV{'rules_file'} = shift(@ARGV); }
     elsif( $arg eq "-F" ) { $defaults_file = shift(@ARGV); }
     elsif( $arg eq "-l" ) { $MODE{'actions_only'} = $ON; }
@@ -1016,6 +1289,7 @@ sub parse_mode {
     elsif( $arg eq "-r" ) { $MODE{'viewrules'} = $ON; $exit = 1; }
     elsif( $arg eq "-t" ) { $temp_file = shift(@ARGV); }
     elsif( $arg eq "-u" ) { $MODE{'usage'} = $ON; $exit = 1; }
+    elsif( $arg eq "-U" ) { &reset_user(shift(@ARGV)); }
     elsif( $arg eq "-v" ) { $MODE{'log_out'} = $ON; }
     elsif( $arg eq "-V" ) { $MODE{'version'} = $ON; $exit = 1; }
     elsif( $arg eq "-o" ) { $MODE{'out_to'} = shift(@ARGV); }
@@ -1030,6 +1304,7 @@ sub parse_mode {
     elsif( $arg eq "-W" ) { $MODE{'whatlists'} = shift(@ARGV); $exit = 1; }
     elsif( $arg eq "/?" || $arg eq "-h" || $arg eq "-H" || $arg eq "-?" ) 
 			  { $MODE{'usage'} = $ON; $exit = 1; }
+    else{print "\"$arg\" is unknown in this version of Zfilter ($version).\n";}
   }
   $return = $exit;
 }
@@ -1062,14 +1337,14 @@ sub parse_msg {
 }
 
 sub load_defaults {
-  if ( open( DEFAULTS, $defaults_file ) ) {
+  if ( &zopen( DEFAULTS, $defaults_file ) ) {
      while( <DEFAULTS> ) {
         if ( /^(\S*)\s*=?\s*(.*)\s*$/ ) {
            $key = $1; $val = $2; $key =~ tr/A-Z/a-z/;
            $MAILENV{$key} = $val;
         }
      }
-     close( DEFAULTS ); 
+     &zclose( DEFAULTS ); 
   }
   $list_dir = &real_file($MAILENV{'list_dir'}); 
   delete $MAILENV{'list_dir'};
@@ -1077,18 +1352,19 @@ sub load_defaults {
   $mail_prog = &real_file($MAILENV{'mail_prog'}); 
   $news_prog = &real_file($MAILENV{'news_prog'});
   delete $MAILENV{'mail_prog'}; delete $MAILENV{'news_prog'};
+  if($MAILENV{'no_flock'}) { $USE_FLOCK = 0; delete $MAILENV{'no_flock'}; }
 }
 
 sub load_permanents {
   @now = ("sec","min","hour","day","mon","year");
-  if ( open( PRMNT, $prmnt_file ) ) {
+  if ( &zopen( PRMNT, $prmnt_file ) ) {
    while( <PRMNT> ) {
     if ( /^(\S*)\s*=?\s*(.*)\s*$/ ) {
       $key = $1; $val = $2; $key =~ tr/A-Z/a-z/;
       $PRMNT{$key} = $val;
     }
    } 
-   close(PRMNT);
+   &zclose(PRMNT);
    @ntime = localtime(time);
    @ltime = split(/\s+/, $PRMNT{'last'});
    foreach $var (0 ... $#now) {
@@ -1102,7 +1378,7 @@ sub load_permanents {
 
 sub save_permanents {
    $prm = sprintf(">%s",$prmnt_file);
-   if( open( PRMNT_FILE, $prm ) ) { 
+   if( &zopen( PRMNT_FILE, $prm ) ) { 
      foreach $key (sort(keys %PRMNT)) {
        $key =~ tr/A-Z/a-z/; 
        if( ($MAILENV{$key}) && $MAILENV{$key} != $PRMNT{$key}) {
@@ -1110,13 +1386,11 @@ sub save_permanents {
        }
        printf PRMNT_FILE "%s = %s\n", $key, $PRMNT{$key} if $PRMNT{$key};
      }
+     &zclose( PRMNT_FILE );
    }
-   close( PRMNT_FILE );
 }
-	
 
 sub do_extras {
-   
   push(@MSG_KEYS, "reply-to","sender","email","name","date","time","when");
 
   # *sigh*
@@ -1138,7 +1412,11 @@ sub do_extras {
     $MAILENV{'email'} = $MAILENV{'real_sender'};
     $MAILENV{'name'}  = $MAILENV{'from'};
   }
+  $MAILENV{'email'} =~ s/\s+$//; $MAILENV{'name'} =~ s/\s+$//;
 
+  if((! ($MAILENV{'real_sender'} =~ /@/)) && 
+      ($MAILENV{'received'} =~ /localhost/i )) { $MAILENV{'ip'} = "LOCAL"; }
+  else { $MAILENV{'ip'} = &resolve_host($MAILENV{'real_sender'}); }
 
   # Get date & time message was sent from "date";
   $MAILENV{'when'} = $MAILENV{'date'};
@@ -1155,6 +1433,12 @@ sub do_extras {
   &set_header("X-Filtered-By","ZFilter $version");  
   # Remove status line (just in case this is a saved file)
   if($MAILENV{'status'}) { &remove_header("status"); }
+  # And add our own status line (removed if saving to inbox)
+  &set_header("Status","O");
+  if( &unique($MAILENV{'inbox'}) ) { $MAILENV{'unique'} = 1; }
+  else { $MAILENV{'unique'} = 0; }
+  if( &empty ) { $MAILENV{'empty'} = 1; } 
+  else { $MAILENV{'empty'} = 0; }
 }
 
 # Sets MAILENV variables "list.listname" for each list the person is on
@@ -1174,7 +1458,98 @@ sub check_what_lists {
     } 
   }
 }
+
+sub postmaster_add {
+  local($address) = @_;
+  local($ad, $bangsite);
 	
+  if( $address =~ /^([^!@]+)@(.+)$/ ) {
+     return "postmaster@$2";
+  } elsif( $address =~ /^(.+)!(.+)$/ ) {
+     $bangsite = $1; $ad = $2;
+     if($ad =~ /^([^@]+)@(.+)$/) {
+	return "$bangsite!postmaster@$2";
+     } else {
+	return "$bangsite!postmaster";
+     }
+  }
+}
+	
+sub dead_letter {
+   local($panic) = sprintf(">>%s/dead_letter.$$",$udir);
+   if( open(PANIC,$panic) ) {
+      print PANIC @ORG_MSG,"\n\n\n";
+      close(PANIC);
+      return 0;
+   } else {
+      push(@ERRORS, 
+      "Can't save dead letter to [dead_letter.$$] in user's home directory.\n");
+      return 1;
+   }
+}
+
+sub test_flock {
+   local($pid);
+   if( $pid = fork) {
+	if( waitpid($pid, 0) >= 0 ) {
+	  if($?) { unlink("test.$pid.$pid.$pid.$pid"); }
+	  return ($?/256);
+	} else { return 1; }
+   } elsif( defined $pid ) {
+ 	$0 = "ZFilter's Child";
+	$temp_file = "test.$$.$$.$$.$$"; 
+	open(TEST,">$temp_file");
+	flock(TEST,0); close(TEST); unlink($temp_file);
+	exit 0;
+   } else {
+	print "Can't fork!"; 
+   }
+   return 1;
+}
+
+sub send_panic_email {
+  local(@errmsg);
+
+  # Message to the local postmaster
+  @errmsg = ("There was a problem delivering mail to the user \"$uname\".\n",
+  "ZFilter may not have access to save mail to the appopriate mail folder.\n",
+  "Internal error log:\n",@ERRORS,"\n",
+  "Further information may be obtained from the following log file:\n",
+  &real_file($MAILENV{'log_file'}),"\n","\n--- Original Message Follows ---\n",
+  @ORG_MSG);
+  &mail("postmaster",$ERR_MSG_SUBJ,@errmsg);
+
+  # Message to the postmaster at the sending site
+  @errmsg = ("There was a problem delivering mail to this address.\n",
+  "Internal error log:\n",@ERRORS,"\n",
+  "Message header follows:\n\n",$MAILENV{'header'},"\n\n");
+  &mail(&postmaster_add($MAILENV{'real_sender'}),$ERR_MSG_SUBJ,@errmsg);
+
+  # Message to the sender
+  @errmsg = ("ZFilter couldn't deliver message to this address.\n",
+  "Probably a file access error.\n--- Your message folllows ---\n",
+  @ORG_MSG);
+  &mail($MAILENV{'real_sender'},$ERR_MSG_SUBJ,@errmsg);
+
+  # Message to the user
+  if( ($MAILENV{'subject'} eq $ERR_MSG_SUBJ) && 
+      ($MAILENV{'x-filtered-by'} =~ /Zfilter/i) ) {
+    @errmsg = $MAILENV{'content'};
+    &mail($uname,$ERR_MSG_SUBJ,@errmsg);
+  } else {
+   @errmsg = (
+    "ZFilter couldn't save a message from \"$MAILENV{'real_sender'}\"\n",
+    "An error message has already been sent to your postmaster, the \n",
+    "postmaster of the sending site, and the original sender.\n",
+    "This is the internal error log:\n",@ERRORS,"\n",
+    "Further information might be obtained from your log file - \n",
+    "  ",&real_file($MAILENV{'log_file'}),"\n",
+    "This is the message header from the message that was sent:\n",
+    "$MAILENV{'header'}\n\n");
+   &mail($uname,$ERR_MSG_SUBJ,@errmsg);
+  }
+}
+  
 #########################################################################
 # Alternate invocations
 
@@ -1198,25 +1573,25 @@ sub setup {
      }
   }
   print "Looking for mail and inews...\n";
-  $mail_prog = &find_prog("mail"); $news_prog = &find_prog("inews");
-  if( $mail_prog ) { print "Found \"mail\"\n"; }    
-  else { print "Unable to locate \"mail\"\n"; }
+  $mail_prog = &find_prog("sendmail"); $news_prog = &find_prog("inews");
+  if( $mail_prog ) { print "Found \"sendmail\"\n"; }    
+  else { print "Unable to locate \"sendmail\"\n"; }
   if( $news_prog ) { print "Found \"inews\"\n"; }
   else { print "Unable to locate \"inews\"\n"; }
   print "(If shown, the defaults are probably right)\n";
 
-  print "Where is \"mail\"? [$mail_prog] = "; $input = <STDIN>; chop $input;
+  print "Where is \"sendmail\"? [$mail_prog] = "; $input = <STDIN>; chop $input;
   if( !$input ) { $MAILENV{'mail_prog'} = $mail_prog; }  
   else { $MAILENV{'mail_prog'} = "$input"; }
  
   if( !$MAILENV{'mail_prog'} ) { 
-    die "ZFilter is useless without \"mail\"!  Commited suicide ";
+    die "ZFilter is useless without \"sendmail\"!  Commited suicide ";
   }
 
   if($MAILENV{'mail_prog'} =~ /\/$/) { 
-	$MAILENV{'mail_prog'} = "$MAILENV{'mail_prog'}mail";
-  } elsif( !($MAILENV{'mail_prog'} =~ /\/mail$/) ) {
-	$MAILENV{'mail_prog'} = "$MAILENV{'mail_prog'}/mail";
+	$MAILENV{'mail_prog'} = "$MAILENV{'mail_prog'}sendmail";
+  } elsif( !($MAILENV{'mail_prog'} =~ /\/sendmail$/) ) {
+	$MAILENV{'mail_prog'} = "$MAILENV{'mail_prog'}/sendmail";
   }
 
   print "Where is \"inews\"? [$news_prog] = "; $input = <STDIN>; chop $input;
@@ -1228,6 +1603,24 @@ sub setup {
   } elsif( !($MAILENV{'news_prog'} =~ /\/inews$/ ) ) {
 	$MAILENV{'news_prog'} = "$MAILENV{'news_prog'}/inews";
   }
+
+  print "Looking to see if the flock(2) call is supported on this system...\n";
+  $use_flock = 1;
+  if( &test_flock ) { 
+   print "WARNING:\n";
+   print "It doesn't look like your system supports the flock(2) call.\n";
+   print "ZFilter uses it in addition to it's own file-locking system to\n";
+   print "help prevent other programs from trying to write to the files\n";
+   print "ZFilter is currently writing to at the same time.\n";
+   print "Since you don't appear to have it, ZFilter won't try to use it\n";
+   print "on your system since using it on a system that doesn't support it\n";
+   print "causes ZFilter to abort, losing the mail it is working on.\n";
+   print "If you're SURE your system supports it, you can override ZFilter's\n";
+   print "decision not to use it.  This is NOT recommended.\n";
+   print "Override and use flock(2) anyway? [N] = "; $input = <STDIN>;
+   if( ! ($input =~ /^y/i) ) { $use_flock = 0; }
+  } else { print "It is.\n"; }
+  if(! $use_flock) { $MAILENV{'no_flock'} = "YES"; }
 
   print "Do you plan to use lists? (Y/N) [N] = "; $input = <STDIN>;
   if( $input =~ /^y/i ) {  
@@ -1254,7 +1647,7 @@ sub setup {
   open( FORWARD, ">$udir/.forward" ) || 
     warn "WARNING: Can't create the .forward file!\n";
   if( ! ($input =~ /${exec_prog}$/) ) { $input = "${input}$exec_prog"; } 
-  print FORWARD "\"| $input $uname\"\n";
+  print FORWARD "\"| $input -I $udir\"\n";
   close(FORWARD);
   print "Processing defaults file...\n";
   open( DEFAULTS, $defaults_file ) || die "Can't open defaults file ";
@@ -1352,7 +1745,6 @@ sub make_dir {
   return $error;
 }
 	
-
 sub summary {
   open(LOGFILE, &real_file($MAILENV{'log_file'}));
   local($sep) = "-" x 78;
@@ -1399,3 +1791,4 @@ sub summary {
   printf "Messages received this hour: $MAILENV{'hour'}\n";
   printf "Messages received this minute: $MAILENV{'min'}\n";
 }
+

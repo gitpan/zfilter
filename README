@@ -1,4 +1,4 @@
-ZFilter main documentation for version 2.4 - Jan 26, 1997
+ZFilter main documentation for version 2.7 - Mar 25, 1997
 
 Contents:
 
@@ -17,13 +17,14 @@ Contents:
 5. How do I handle lists?
 6. How do I change the default settings?
 7. How can I change the default files?  How can I see summaries? logs? etc.. 
-8. Miscellaneous
-9. Examples
-10. How does ZFilter compare to other filter programs?
-11. Modification history
+8. What does ZFilter do if there's a problem with mail?  
+9. Miscellaneous
+10. Syntax examples, solutions to sample problems
+11. How does ZFilter compare to other filter programs?
+12. Modification history
 
 --------------------------------------------------------------------------
-1. What is Zfilter?
+1. What is ZFilter?
 
 ZFilter is an e-mail filtering program.  Like a real filter (say, for 
 coffee), ZFilter can strain out some unwanted or unpleasant e-mail, or
@@ -49,8 +50,15 @@ situations.
 
 ZFilter can be found wherever your favorite archives of 
 comp.sources.unix are stored. It is occasionally posted to 
-comp.lang.perl.misc and can be found on CPAN, and from my home page
-at http://www.guam.net/home/viper/files.html
+comp.lang.perl.misc (about once every two versions or so).
+
+It is available on CPAN in the directory  /authors/Steve_Zeck
+(for a random site, go to  http://www.perl.com/CPAN/authors/Steve_Zeck  )
+
+It is also on my home page at  http://www.guam.net/home/viper/files.html
+and is (as a last resort) available uuencoded via eMail if you send a 
+message to viper@kuentos.guam.net with the words "send zfilter" in the 
+subject line of the message.
 
 Support from the author can be obtained by e-mailing  
  viper@kuentos.guam.net
@@ -117,6 +125,10 @@ Unix Hacks: Skim "variables" to see how ZFilter extracts variables from
          files, but you may find that some things you did with the old
          filter can be done with fewer lines or more efficiently with   
          ZFilter's new commands and abilities.
+People upgrading from an old ZFilter:  Go to the very end of this message
+         and read the modification history to see what has been changed  
+         from your version of ZFilter.  Changes, new commands, etc.. should
+         be documented in the appropriate places.
 
 --------------------------------------------------------------------------
 2. How do I implement it?
@@ -355,6 +367,7 @@ when		- The original, unbroken date
 name		- The personal name of the sender (if defined)
 email		- The sender's preferred e-mail address
 content		- The entire contents of the letter
+header 		- The entire header of the message
 real_sender	- ZFilter's "best guess" as to where the message came from.
 sender		- Equivalent to 'real_sender' when the variable 'sender'
 		  is not explicitly stated in the message.
@@ -368,6 +381,18 @@ chain		- A special one, Zfilter tries to guess if the incoming
 		  variable doesn't exist.
 		  See the Zfilter Setup part of the manual for more info
 		  on setting the threshold for chain letter alarms.
+unique		- Another special one.  This variable is set if the content
+		  of the message is unique to your inbox.  If the message
+		  is something you have in your inbox already, even if
+		  the headers of the message are different, this variable
+		  will not exist.  Also see the UNIQUE command.
+empty		- This variable is set if the content of the message is
+		  made up only of whitespace (i.e. if there is nothing in
+		  the message but spaces)
+ip		- This variable is set if the hostname of the sender's
+		  address can be resolved to it's IP address.  See the
+		  miscellanious section for more on how this is done and
+		  special cases.
 
 And there are a few internal ones that you probably shouldn't change:
 
@@ -499,13 +524,49 @@ And so on...
 
 That said, here are a list of all the actions and how to use them.
 
+NOTE: Some commands take several arguments.  To have several words
+ (separated by spaces) considered as one argument, you must put them
+ in quotation marks.  For example, the "replace" command replaces one
+ set of text with another set of text.  To replace every occurence of
+ the text "aabbccd" with "bbaaddc" in a variable, you would use:
+ 'replace variable aabbccd bbaaddc'.  To replace "once upon a time"
+ with "a long time ago in a land far, far away" (since you want to
+ replace multiple words) you must use this:
+ 'replace "once upon a time" "a long time ago in a land far, far away"'
+ (the two arguments are quoted).  For convenience, some commands which
+ often take multiple words as an argument don't require this.  Wherever
+ the "Usage:" line says "value", quotation marks are optional for 
+ whatever you use for "value".  For example, since addheader's usage line
+ says "addheader variable value", 
+  addheader subject The latest subject
+ is a perfectly acceptable equivalent to
+  addheader subject "The latest subject"
+ (Note that if you wanted "subject" to be "the subject", it must still be
+  quoted like this:  addheader "the subject" The latest subject )
+
+TIP: Whenever ZFilter sees a word beginning with "?" that isn't inside
+ a pair of quotes (for example ?what, but not "?what" or "now ?what"),
+ it replaces the word with the variable that comes after the "?".  So...
+ if you say "page Message from ?sender", you would get a page that looked
+ something like this: "Message from killer.dentist@pain.com".  This even
+ works on commands; if the subject was, for some reason, "page", you
+ could say "$subject Incoming Mail", and ZFilter would act as if you'd
+ said "page Incoming Mail".
+
+Action list:
+
+#
+  As an action, this is a synonym for "comment".
+ Usage: # value
+ Example: # T-I-M-B-E-R !!
+
 ADDHEADER 
   Adds the variable and value to the header of the message you have
  just received.  This can be used prior to forwarding or saving.
  It is not reccomended that you use Addheader for common variables 
  like Sender or From...  It acts as it's name suggests: it _Adds_
  the header line.  If there was a prior variable with the same name,
- now you will have two.  Use Setheader instead
+ now you will have two.  Use Setheader instead.  
  Usage: addheader variable value
  Example: addheader X-Came-From Bob's House O' Email
 
@@ -515,6 +576,16 @@ ADDLIST
  from the command line, or with the action "remlist"
  Usage: addlist listname
  Example: addlist boating
+
+ANNOY 
+  A synonym for "page".
+ Usage: annoy value
+ Example: annoy You have spam!
+
+BIFF
+  A synonym for "page".
+ Usage: biff value
+ Example: biff Incoming spam!
 
 BOUNCE
   Forwards the message to another e-mail address, or multiple e-mail      
@@ -530,6 +601,12 @@ CANNED
  use them, see a later section.
  Usage: canned filename
  Example: canned standard_acknowledgement
+
+COMMENT
+  Make a comment in the log file (and to wherever you have redirected logs
+ if you're doing that).  Useful only for making comments to yourself.
+ Usage: comment value
+ Example: comment Hope this works...
 
 CREATE
   Create explicitly makes a permanent variable.  See the discussion on
@@ -557,6 +634,15 @@ DELETE
  THEM and the message will be deleted.
  Usage: delete
 
+DO
+  Run an internal perl routine with the arguments specified.  You may
+ either run a ZFilter routine (not reccomended.  All the routines you
+ can safely use are accessible via other commands.  Only use one if you
+ know what you're doing) or you may run a routine previously loaded by
+ "load".  
+ Usage: do routine arguments...
+ Example: do secret_routine aaa bbb ccc
+
 EXECUTE
   Runs another program.  The output of the program is captured by the
  variable "result" and can be used in later expressions. 
@@ -576,6 +662,11 @@ FORWARD
  command.
  Usage: forward address,address2,address3....
  Example: forward bob@bozoworld.com,loser@aol.com
+
+GET
+  A synonym for "load".
+ Usage: get filename
+ Example: get cgi-lib.pl
 
 IGNORE
   Save the message to your inbox.  This command is usually used for clarity,
@@ -613,6 +704,17 @@ LEAVE
   A synonym for "Ignore"
  Usage: leave
 
+LOAD
+  Load in a perl library.  This can be a standard one, like cgi-lib.pl
+ or you may load in any of your own.  ZFilter uses "require" to load
+ the library.  There are no consistency checks performed on your library
+ before doing this.  If there is any problem loading the library, require
+ will cause the program to immediately abort, without saving whatever
+ message it is currently processing.  Use extreme caution with this 
+ command.  
+ Usage: load filename
+ Example: load /var/www/cgi-lib.pl
+
 MAIL 
   Like "canned", lets you mail a canned response file to a user (a 
  combination of forward & canned in a sense).  Note that it mails the
@@ -626,6 +728,12 @@ MAILLIST
  the command line for both adding and deleting. 
  Usage: maillist listname
  Example: maillist boating
+
+MAILRESULT
+  Mails the output of the last program that was run to the eMail address
+ specified.  
+ Usage: mailresult email_address
+ Example: mailresult loser@aol.com
 
 MODE
   The mode to leave files in when you're done saving to them.  (this
@@ -649,8 +757,16 @@ NAME
  which contains the real name of the sender (if there is one) isn't
  changed, so if you want it to be changed, you'll have to set it with
  the "set" command.
- Usage: name name_of_person_sending_the_mail
+ Usage: name value
  Example: name Dr. Bingobob
+
+PAGE
+  Tries to send a message to you if you're logged on to the same system
+ that is getting mail.  If you are on multiple times, it will try to
+ send the page to all of the sessions.  Like any command, you may refer
+ to variables by putting a "?" in front of them.
+ Usage: page value
+ Example: page Mail from ?sender about ?subject
 
 PASS
   A synonym for "xcontent".  
@@ -701,7 +817,12 @@ PROCESS
  current message.  When done reading the other rules file, processing
  returns to the command immediately following the "process" command.  You
  could theoretically have two rules file each set to process each other.
- That would lock up ZFilter for eternity until it was killed.
+ That would lock up ZFilter until the combined internal pressures of
+ stack overflow and out-of-control demands on swap space would explode 
+ with enough force to knock the earth out of it's orbit and send it
+ hurtling into the sun.  If we're lucky.  We might just as easily knock
+ the earth the _other_ way out of orbit so we'd get farther away from the
+ sun until we all slowly froze to death.  Either way, don't try it.
  Usage: process rules_file
  Example: process secondary.rules
 
@@ -714,6 +835,17 @@ PURIFY
   A synonym for "xheader".  
  Usage: purify program program_arguments...
  Example: purify /bin/cat 
+
+QUOTE 
+  Adds "> " to the beginning of every line of the variable given.  For
+ example, if the variable "foo" looked like this:
+    Greetings from the world of foo.
+    Have a nice day.
+ doing "quote foo" would turn it into:
+    > Greetings from the world of foo.
+    > Have a nice day.
+ Usage: quote variable
+ Example: quote foo
 
 REMHEADER
   Removes the variable from the header of the message received.  This
@@ -729,6 +861,32 @@ REMLIST
  is available under the section about "lists"
  Usage: remlist listname
  Example: remlist boating
+
+REPLACE
+  Replace every occurence of the first element with the second one in
+ the given variable.  For example, if you said
+ "replace var aaa bbb", every time "aaa" appeared in the variable "var",
+ it would be replaced with "bbb".  This differs from "xlate" which will
+ only replace one letter or character, but works with ranges of letters.
+ Saying "xlate var aaa bbb" will replace every letter "a" with the letter
+ "b".  You may only have one-word text for now.
+ Usage: replace variable_name text1 text2
+ Example: replace var fred bob
+
+REQUIRE
+  A synonym for "load".
+ Usage: require library_name
+ Example: require cgi-lib.pl
+
+RESULT
+  A synonym for "mailresult".
+ Usage: result email_address
+ Example: result loser@aol.com
+
+RESULTTO 
+  A synonym for "mailresult".
+ Usage: result email_address
+ Example: resultto loser@aol.com
 
 SAVE
   Save appends the message to a file just as the "savecopy" command does.
@@ -793,6 +951,18 @@ UMASK
  Usage: umask mask
  Example: umask 0077
 
+UNIQUE
+  Save the message to the folder only if the message content is not  
+ already in the folder.  In all other respects, this command acts like
+ the "savecopy" command.  This is useful if someone is mail-bombing you
+ with the same message over and over.  This command ignores message 
+ headers, and only looks to see if the incoming message content is unique
+ to the folder specified (because some mail-bomb programs have header that
+ changes with time).  As a shortcut, the variable "unique" is set if the
+ incoming message is unique to your inbox so you do not need to check it.
+ Usage: unique folder_name
+ Examples: unique Mail/incoming
+
 WRITE
   A synonym for "saveover".
  Usage: write folder_name
@@ -821,9 +991,12 @@ XLATE
  replace all 1s with 5s, all 2s with 6s and so on.  You may specify a
  range of characters with "-".  This would be another way to do the same
  thing as above: "xlate var 1-4 5-8".  This turns all uppercase letters
- into lowercase ones: "xlate var A-Z a-z".
+ into lowercase ones: "xlate var A-Z a-z".  Alternatively, you may separate
+ the two ranges with a "/".
  Usage: xlate var range1 range2
+   	xlate var range1/range2
  Example: xlate var A-Z a-z
+ 	  xlate var A-Z/a-z 
 
 XMESSAGE
   Passes the message to the program you specify.  Takes the output of 
@@ -871,6 +1044,16 @@ Dear Jacob Smith,
  Bob Wesley
  Acting Department Chairperson: Engineering
 
+
+There are one or two more tricks you may find useful; If you have a 
+variable that is a number, you can put either a comma (,) or a hash (#),
+or both after the name (but still inside the {}s) to have the number
+printed differently.  If you use a "#", the number will have "st","nd",
+"rd" or "th" after it as appropriate.  If you use a ",", the number will
+have commas every three numbers.  For example, assuming the variable
+"number" has the value "10303", {number#} will come out as "10303rd",
+{number,} will come out as "10,303" and {number#,} (or {number,#}) will
+come out as "10,303rd".
 
 That's all there is to it!  Other than the {}s, the file used for a canned
 response is an ordinary text file.  If you didn't put {}s in it, everyone
@@ -1035,6 +1218,8 @@ filter program used.  Blame the guy who did the old filter, not me.
  -F filename	- Use the specified defaults file.
  -i 		- Ignore "reply-to" field of the message, and use the
 		  address the message came from for the "canned" command.
+ -I		- Ignore the next argument.  You can have as many of these
+		  as you like.  
  -l		- Actions-only (don't log the sender and subject)
  -L directory	- Use the specified directory to store logs
  -n		- Not-really, display the logs to the screen and take no
@@ -1071,7 +1256,26 @@ to ".myzfdflt".
 ZFilter ignores any arguments it doesn't understand.
 
 --------------------------------------------------------------------------
-8. Miscellanious
+8. What does ZFilter do if there's a problem with mail?  
+
+ZFilter takes the following steps...
+
+- If it ever can't lock or open a file, it aborts opening it.
+- If it was trying to write to a mail folder, it gives up and tries
+ to write to the inbox instead.
+- If it can't write to the inbox, it tries to save the message as a file
+ in your home directory called "dead_letter.####" (where #### is the 
+ process ID for ZFilter at the time, a semi-random number)
+- If it can't save the dead letter file, it sends the message (with an
+ error report) to the local postmaster, sends just the error report
+ and message headers to the postmaster at the sending site, then sends
+ the message (no error report) back to the sender, and mails you an
+ error report and message header in hopes that it will eventualy get
+ through.  (If it encounters the same error when trying to save the
+ error report, it just keeps sending it back to you)
+
+--------------------------------------------------------------------------
+9. Miscellanious
 
 - Normally, ZFilter logs it's actions to a file called "filter-log". 
  You may change this in the course of processing by changing the
@@ -1121,6 +1325,12 @@ ZFilter ignores any arguments it doesn't understand.
  without the "i".  SOO... you can put any regex perl stuff in it you 
  like, say  if( bob ? ^foo$ ) to match "foo" only case-insensitive.  
 
+- When you use the save, or savecopy commands, they save to whatever the
+ "base_dir" location is, unless you specify a relative or full path as
+ the folder name.  Since most people's mail is in the directory "Mail" or
+ "mail", you will need to say "savecopy mail/foldername" or 
+ "savecopy Mail/foldername" if you don't change the base_dir.
+
 - CAVEAT! 
  Using ANY of these options on ZFilter's invocation line will cause
  ZFilter to quit without actually processing a message:
@@ -1133,8 +1343,36 @@ ZFilter ignores any arguments it doesn't understand.
  And will cause all your mail to dissapear if you use them in your 
  .forward file.
 
+- Whenever ZFilter opens a file that it intends to write to, it creates
+ a file called "filename.lock" (where "filename" is the name of the file
+ that it is trying to write to).  It also locks the file using the flock(2)
+ system call.  If you create a file called "filename.lock" and do not
+ remove it, ZFilter will never write to the file.  If your system does not
+ support the flock system call, you may disable it by editing ZFilter and 
+ setting "$USE_FLOCK" to "0".  
+
+- ZFilter takes the following actions based on incoming signals:
+ SIGALRM - Abort file-locking attempt.  Follow failed-to-open-file procedures.
+ SIGQUIT, SIGHUP, SIGINT, SIGTERM - Remove existing file locks, try to save
+   the message in memory to "dead_letter.####" (where #### is the process ID).
+ SIGABRT - Remove existing file locks.  Vaporize message in memory.
+ SIGKILL - Die a nasty, miserable death.  No chance to remove file locks.
+   They must be deleted later manually.
+
+- ZFilter sets the "ip" variable in the following manner:  If it looks
+ like the message came from your local system, it sets "ip" to the word
+ "LOCAL" (all in caps).  If the message looks like it came from UUCP at
+ some point (in which case it would be useless to try to resolve the host)
+ the 'ip' variable is set to "UUCP".  In all other cases, ZFilter tries to
+ determine the IP address of the host and sets the 'ip' variable to it.
+ If the IP address cannot be determined, then the 'ip' variable will be
+ empty.  You could test the message like this:
+   if( ! ip ) save Mail/spam; 
+   if( ip = "UUCP" ) save Mail/uucp;  
+   if( ip = "LOCAL" ) canned getbacktoya; savecopy Mail/localmail
+
 --------------------------------------------------------------------------
-9. Examples:
+10. Examples:
 
 TASK: I would like to acknowledge all e-mail received with a form letter.
  I would also like all mail coming from harry@somewhere.outhere.com to
@@ -1173,6 +1411,27 @@ NOTE: Mail containing the word "meeting" in the subject line AND the
  the response file "help-response", AND get the canned message "vacation"
  (that's two messages) and be deleted.
 
+TASK: I am currently being mail-bombed by someone who keeps flooding
+ my incoming mailbox with the same message, over and over.  I would like
+ to have messages saved only if they contain unique content.  I would
+ also like to delete messages if they have no actual content.
+
+Here is the rules file:
+
+if( ! unique | empty ) delete
+
+NOTE: this only works for the inbox, since the "unique" variable is a
+ shortcut.  See the "unique" command for information about saving the
+ message to a folder if it is unique.
+
+TASK: I would like to delete chain letters before I see them
+
+Here is the rules file:
+ 
+if( chain ) delete
+
+Easy, huh?
+
 TASK: I have moved to another e-mail address.  I was previously 
  loser@aol.com   and now I'm   I_have_a_life_now@somewhere.else .  I would
  like all mail at loser@aol.com to be forwarded to my new address, and
@@ -1186,7 +1445,7 @@ forward I_have_a_life_now@somewhere.else; canned Ive_moved
 One line!  Easy, huh?  Just make sure the file "Ive_moved" exists.
 
 --------------------------------------------------------------------------
-10. How does ZFilter compare to other filter programs?
+11. How does ZFilter compare to other filter programs?
 
 I only know of three other programs that try to filter mail, so I'm sorry
 if I don't compare it to your favorite one.  Perhaps you can compare it
@@ -1278,18 +1537,16 @@ mailagent: I like mailagent.  If I had known about mailagent when I first
 	assign		set
 	back		run + take	Runs a program & takes actions
 				     	based on it's output
-	beep		-		Controls how you are beeped when
-					you have new mail
+	beep		page 		(as an argument; also annoy, or biff)
 	begin		n/a		Enters a new state
-	biff		-		Enable/Disable notifying the user
-					when s/he has new mail.
+	biff		page		(or annoy, or biff)
 	bounce		bounce
 	-		create
-	do		-  		Calls an internal PERL routine.
+	-		comment
+	do		do  		
 	-		dec
 	delete		delete
-	feed		xmessage
-			(or feed)
+	feed		xmessage	(or feed)
 	forward		forward		
 	give		pipecontent
 	-		inc	
@@ -1298,23 +1555,20 @@ mailagent: I like mailagent.  If I had known about mailagent when I first
 	macro		-		Lets you create a macro
 	message		canned
 	-		name
-	nop		(leave empty)	No-operation.  To not take an
-					action to an "if" statement, 
-					simply do not put one after it.
+	nop		(leave empty)	No-operation.  To not take 
+					actions to an "if" statement, 
+					simply do not put any after it.
 	notify		mail
 	once		(default)	Only take the command once
-	pass		xcontent
-			(or pass)
+	pass		xcontent	(or pass)
 	-		pdec
 	-		pinc
 	pipe		pipe
 	post		post
 	process		n/a		Process and execute Mailagent
 					commands.
-	protect		mode
-			(or protect)
-	purify		xheader
-			(or purify)
+	protect		mode		(or protect)
+	purify		xheader		(or purify)
 	-		remlist		See "addlist"
 	queue		n/a		Re-Queue the message to process
 					later.
@@ -1322,23 +1576,22 @@ mailagent: I like mailagent.  If I had known about mailagent when I first
 					mode if it has been recorded before.
 	reject		-		Abort the current action and
 					reset to default action.
-	require		-		Load in a perl file
+	require		load		(or get, or require)
 	restart		-		Restart rule file
 	resync		resync
-	run 		execute
-			(or run)
+	run 		execute		(or run)
 	save		save
-	select		-		Execute command only within (x)
+	select		-		Execute command only within given
 					time period.
 	server		n/a		Treat message body as server
 					commands.
 	split		-		Split up the message into several
 	store		savecopy	
 	strip		remheader
-	subst		xlate
+	subst		subst
 	tr		xlate
 	umask		umask		Changes process's umask
-	unique		-		Save message only if it is unique
+	unique		unique		(and the var. "unique" as a shortcut)
 	vacation	set,canned	Turns vacation mode on and off
 					(when on, tells people who write
 					to you that you're on vaction)
@@ -1346,9 +1599,59 @@ mailagent: I like mailagent.  If I had known about mailagent when I first
 	-		zap
 	
 --------------------------------------------------------------------------
-11. Modification history
+12. Modification history
 
-ver, 2.3: Added xheader, xcontent, xmessage, resync, umask and mode
+ver. 2.7: Experimental "-U (user)" command.  This will obviously only work
+          if you're running as root (short of serious security holes in your
+	  system).  Added the "ip" variable and resolving the IP address of
+	  of the sender's hostname.  Added "quote" and "mailresult".
+ver. 2.6: More bugfixes, adding or removing from lists shouldn't abort
+	  the entire program if there's a problem.  Canned should be 
+	  fixed, I accidentally trashed it when I was neatening up from
+	  2.4.  How embarassing!  ZFilter practices safe file-locking
+	  via it's own method & flock(2).  Zfilter tries to figure out
+	  if you can use flock(2) during config mode and warns the user
+	  if it doesn't look like your system supports it.
+	  ZFilter has signal handling, (most notably, it tries to save
+	  the letter in memory to disk before dying).  ZFilter is better 
+          about failed attempts to lock files or save mail.  If it can't
+	  save the message to the mail folder, inbox or a "dead letter"
+	  file in the user's home directory, it sends panic email to
+	  the appropriate postmasters, the sender and the user (it will
+	  keep re-queueing the error message until it eventually gets through
+	  or someone explicity deletes the error message from the sendmail
+	  incoming mail queue).  Fixed the bug in "unique" that flagged
+	  messages with no content.  Added the "empty" variable so you can
+	  delete them explicitly if you want to.  
+          There is an explicit "Ignore" argument for the command line.  
+          For what it's worth, you can now use a single "-" to prefix multiple 
+          arguments to zfilter that don't need any additional information.  
+          Like, you can now say "zfilter -sr" on the command line because 
+          neither option "s" nor option "r" need to know anything else.  
+ver. 2.5: The "Bugfix" version.  :)  But there's new stuff too.
+          Fix for "addlist" and "remlist" when used internally.
+	  Improved Xlate a bit to take "/"s between vars.
+	  A bit more paranoid about "xcontent" and programs that
+	  might not return what we're hoping for.  The command parser
+	  now accepts multiple-word arguments (if they're quoted).
+	  Fix for file permission problems.  Fixed potential problem to 
+	  "canned" and "mail" which might have started "filter fights".  
+          ZFilter now uses "sendmail" instead of "mail" for actual delivery
+	  of outbound mail.  Tightened up internal code for better
+	  efficiency and easier readability.  ZFilter now logs when it
+	  won't respond to a message that's come from another filter.
+	  Zfilter won't let you process a rules file that's already 
+	  being processed.  
+	  Added "do" and "require" to help people load their own modules.
+	  Added "comment", "unique" command and variable.  Added some
+	  cool new abilities to form letters.  You can now interpolate
+	  variables as commands or command arguments.  Added the "page"
+	  command.
+ver. 2.4: Reorganized several of ZFilter's commands and functions
+	  for better readability.  Minor bugfixes, mostly some
+	  applications of "post".  Revision to some parts of this README
+	  to make them more understandable.
+ver. 2.3: Added xheader, xcontent, xmessage, resync, umask and mode
 	  Bugfixes for all the 2.2 commands.  :)
 ver. 2.2: Added bounce, xlate, addheader, remheader, setheader, take
 	  keepheader, post, process, saveover and "bounce" as a separate
