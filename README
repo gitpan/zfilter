@@ -12,11 +12,11 @@ Contents:
    3.3. Variables
    3.4. Operators
    3.5. Actions
-   3.6. Examples
+        3.5.1. Meta-Actions
 4. How do I write Form letters?
 5. How do I handle lists?
 6. How do I change the default settings?
-7. How can I change the default files?  How can I see summaries? logs? etc.. 
+7. How can I change the default files?  How can I see summaries? logs? etc
 8. What does ZFilter do if there's a problem with mail?  
 9. Miscellaneous
 10. Syntax examples, solutions to sample problems
@@ -61,7 +61,7 @@ message to viper@kuentos.guam.net with the words "send zfilter" in the
 subject line of the message.
 
 Support from the author can be obtained by e-mailing  
- viper@kuentos.guam.net
+ saintly@innocent.com
 Ideas and suggestions are always welcome.
 
 Flames are welcome, just put the word "FLAME" in the subject line.  :)
@@ -134,10 +134,10 @@ People upgrading from an old ZFilter:  Go to the very end of this message
 2. How do I implement it?
 
 STEP 0: If you don't have PERL, go get it and install it.  Shame on you!
+        ZFilter runs fine with Perl 5.0 and up.
 
 STEP 1: Stick the perl source "zfilter" somewhere and make it 
-	executable. This example is assuming you're putting it 
-	in "/local/bin".
+	executable. This example is assuming you're putting it in "/local/bin".
 
 Non-Unix techies: Get a Unix-techies' supervision before installing PERL
 	on their system.  They may not want it.  If they don't, get
@@ -268,18 +268,18 @@ if ( ! raining & car will start | can take bus ) go to the store
 works out like this, assuming it's raining and the car won't start, but
 the bus is available:
 
-! raining ... - is False.  It is raining.
+! raining ...  - is False.  It is raining.
 ... car will start ... - Also false.  It won't.
 ... bus is available - True!  The bus is available.
 
 End result: We go to the store!  Why?  Look at it this way:
-((( false ) & false ) | true)  representing the three sub-expressions.
-((   false & false  ) | true)  -not raining and car will start (both false)
-((      false       ) | true)  -neither is true, so that sub-expression
-				is false. 
-(       false | true        )  -combination of previous two and "bus 
-			        is available"
-   	    True.	       -End result is true.
+((( false ) & false ) | true)  - representing the three sub-expressions.
+((   false & false  ) | true)  - not raining and car will start (both false)
+((      false       ) | true)  - neither is true, so that sub-expression
+				 is false. 
+(       false | true        )  - combination of previous two and "bus 
+			         is available"
+   	    True.	       - End result is true.
 
 If you need more help, the "&" and "|" parts work this way:
   something & something - is true ONLY if both "somethings" are true.
@@ -371,7 +371,10 @@ header 		- The entire header of the message
 real_sender	- ZFilter's "best guess" as to where the message came from.
 sender		- Equivalent to 'real_sender' when the variable 'sender'
 		  is not explicitly stated in the message.
-lines		- The number of lines in the letter
+lines		- The number of lines in the letter contents
+words		- The number of words in the letter contents
+chars		- The number of characters in the letter contents
+size		- The size (in kilobytes, rounded up) of the letter
 signature	- your ".signature" file.
 chain		- A special one, Zfilter tries to guess if the incoming
 		  message might be a chain letter.  It counts the number
@@ -406,7 +409,7 @@ You may define your own variables using the 'set' command for a variable
 that doesn't exist.  (using set on a variable that _does_ exist will change
 the value of it to whatever you set it to.)
 
-All these variables are 'temporary' variables - that is, they change every
+All these variables are 'temporary' variables; that is, they change every
 time a letter comes in.  Even variables created with 'set' are temporary,
 and are reset every letter.  ZFilter also supports permanent variables 
 that don't change or lose their values between letters.  These are ideal
@@ -522,8 +525,6 @@ forward jimbob@bozoland.org; stop
 
 And so on...
 
-That said, here are a list of all the actions and how to use them.
-
 NOTE: Some commands take several arguments.  To have several words
  (separated by spaces) considered as one argument, you must put them
  in quotation marks.  For example, the "replace" command replaces one
@@ -548,10 +549,59 @@ TIP: Whenever ZFilter sees a word beginning with "?" that isn't inside
  a pair of quotes (for example ?what, but not "?what" or "now ?what"),
  it replaces the word with the variable that comes after the "?".  So...
  if you say "page Message from ?sender", you would get a page that looked
- something like this: "Message from killer.dentist@pain.com".  This even
+ something like this; "Message from killer.dentist@pain.com".  This even
  works on commands; if the subject was, for some reason, "page", you
- could say "$subject Incoming Mail", and ZFilter would act as if you'd
+ could say "?subject Incoming Mail", and ZFilter would act as if you'd
  said "page Incoming Mail".
+
+3.5.1 Meta-Actions
+
+There are currently three so-called "Meta-actions".  These actions
+modify the behavior of other actions.  The two commands "AT" and
+"AFTER" can delay the execution of their action until a certain,
+specified time.  Each of these meta-actions only modify the action
+they precede.  For example, if you say:
+
+  after 12:00 canned hi_noon; canned time_now;
+
+the action "canned hi_noon" will take place after 12:00pm.  The action
+"canned time_now" will take effect immediately, possibly taking effect
+before the "canned hi_noon" action.  Only the action specified in the
+"AFTER" or "AT" meta-action will be delayed.  The rest of the rules file
+and the other actions will all take effect normally.  The "DURING" meta-
+action will only execute the action specified if the time is currently
+between the two times given.  If you said:
+
+   during 12:00 14:00 canned good_timing
+
+the action "good_timing" would only be taken if the time was currently
+between 12:00pm and 2:00pm.  If the time was 5:00pm or 11:55am, the
+command would be ignored.  Here are the ways you can specify the time
+for the AT, AFTER and DURING meta-actions:
+
+  zz        - at zz seconds past the current hour and minute
+  xx:yy     - at the time xx:yy:00 
+  xx:yy:zz  - at the time xx:yy:zz
+
+Preceding the time with a "+" will make the time relative to the current
+time:
+
+  +zz       - zz seconds after the message is received
+  +xx:yy    - xx hours and yy minutes after the message is received
+  +xx:yy:zz - xx hours, yy minutes and zz seconds after the message is rec'd.
+
+For example, saying "after 12:00 page Mail!" will page you on or after 
+12:00pm.  Saying "after +12:00 page Mail!" will page you 12 hours after
+the mail is received.  Saying "after 12 page Mail!" will page you after
+the 12th second had elapsed in the current minute.  
+
+You do not need to enter the xx/yy/zz if it is zero.  For example, 
+"+0:05" (after five minutes) is the equivalent of "+:5".  
+
+All times are in 24-hour format (military time).  Don't say "1:00pm", 
+instead say "13:00".
+ 
+That said, here are a list of all the actions and how to use them.
 
 Action list:
 
@@ -577,10 +627,28 @@ ADDLIST
  Usage: addlist listname
  Example: addlist boating
 
+AFTER
+  Runs a action any time after a certain, specified time.  For example,
+ if you said "after 12:00 page You have mail!", you would receive the
+ page at 12:00 if it was earlier than 12:00 when you received the message,
+ or immediately if it was later than 12:00 when you received the message.
+ For valid ways to specify the time, see the section on Meta-Actions
+ Usage: after time action
+ Example: after +1:00:00 canned leave_me_alone
+
 ANNOY 
   A synonym for "page".
  Usage: annoy value
  Example: annoy You have spam!
+
+AT
+  Runs a specified command at the time given.  If the time given has already
+ passed, wait till the next day.  For valid ways to specify the time, see
+ the section on Meta-Actions.  NOTE: if you specify a relative time (a time 
+ preceded by a '+'), this command will be functionally equivalent to the AFTER 
+ command.
+ Usage: at time action
+ Example: at 12:00 bounce foobar@wacko.com
 
 BIFF
   A synonym for "page".
@@ -634,6 +702,18 @@ DELETE
  THEM and the message will be deleted.
  Usage: delete
 
+DNSBL
+  Checks all of the hosts the message has passed through against a DNS-based
+ black-hole list.  Sites are typically placed in such a list after they
+ been shown to send spam, or to support spammers.  Since this checks all
+ hosts in the 'Received' lines, you should be able to trap messages even if
+ they come to your site indirectly.  Specify the host names of the black holes
+ you wish to check separated by commas, followed by the action you want to
+ take if the mail has come through a black-holed site.  If no action is 
+ specified, the default action is to delete the message.
+ Usage: dnsbl hostname,hostname... action
+ Example: dnsbl blackholes.mail-abuse.org,relays.mail-abuse.org delete
+
 DO
   Run an internal perl routine with the arguments specified.  You may
  either run a ZFilter routine (not reccomended.  All the routines you
@@ -642,6 +722,13 @@ DO
  "load".  
  Usage: do routine arguments...
  Example: do secret_routine aaa bbb ccc
+
+DURING
+  Run a command only if the current time is between the two specified times
+ If the time is outside them, either earlier than the first time or later
+ than the second time, the command will be ignored.
+ Usage: during start-time end-time action
+ Example: during 12:00 14:00 canned good_timing
 
 EXECUTE
   Runs another program.  The output of the program is captured by the
@@ -676,6 +763,7 @@ IGNORE
  follow an "Ignore" command or "Leave" command with "delete", the message
  will be deleted anyway.
  Usage: ignore
+ Example: ignore
 
 INC
   Increment a variable by 1.  Obviously, this only makes sense for variables
@@ -759,6 +847,12 @@ NAME
  the "set" command.
  Usage: name value
  Example: name Dr. Bingobob
+
+NOP
+  Assembler-speak for "No-Operation".  This command does nothing, and
+ ignores any arguments that come after it.
+ Usage: nop
+ Example: nop
 
 PAGE
   Tries to send a message to you if you're logged on to the same system
@@ -847,6 +941,11 @@ QUOTE
  Usage: quote variable
  Example: quote foo
 
+RBL
+  A synonym for "dnsbl".
+ Usage: rbl hostname,hostname... action
+ Example: rbl dialups.mail-abuse.org save junkmail
+
 REMHEADER
   Removes the variable from the header of the message received.  This
  can be used prior to a forward or save if you want to remove private or
@@ -887,6 +986,15 @@ RESULTTO
   A synonym for "mailresult".
  Usage: result email_address
  Example: resultto loser@aol.com
+
+RESYNC
+  Resync re-synchronizes the message headers and content with the
+ variables in memory.  Useful if you've modified the header for
+ some reason (especially through a command like xheader) and need
+ to re-set the variables.  Variables are re-read from the message
+ headers as if this were a new message.
+ Usage: resync
+ Example: resync
 
 SAVE
   Save appends the message to a file just as the "savecopy" command does.
@@ -1234,6 +1342,7 @@ filter program used.  Blame the guy who did the old filter, not me.
  -S		- View the log file.
  -t filename	- Use the specified file for temporary information
  -u 		- Usage.  Display a summary of command-line arguments
+ -U user	- Experimental, try to run as the user given.  Can be UID or login.
  -v		- Verbose- print logs to the screen or specified place.
 		  change where messages are printed to with -o.  Logging
 		  to the log file is unchanged.
@@ -1254,6 +1363,10 @@ to set the "permanent" file to ".myzfprmnt" and the "defaults" file
 to ".myzfdflt".
 
 ZFilter ignores any arguments it doesn't understand.
+
+If you use arguments that don't require additional info, like -x or -V (but
+not -W, which requires an address) you can specify them all with a single
+dash, like this: "zfilter -xXV"
 
 --------------------------------------------------------------------------
 8. What does ZFilter do if there's a problem with mail?  
@@ -1471,7 +1584,10 @@ procmail: Procmail places more emphasis on reliability and delivering mail
 	priority than delivering mail under very adverse conditions.
 	ZFilter offers many more actions, and abilities.
 
-mailagent: I like mailagent.  If I had known about mailagent when I first
+mailagent: NOTE: This comparison was written in 1997, and I haven't 
+        checked it against the current version of Mailagent.
+ 
+        I like mailagent.  If I had known about mailagent when I first
 	tried to find a better filter, I might never have written ZFilter.
 	ZFilter differs in several ways.  First, the rules file for
  	Mailagent follows a lex style, ZFilter's is more like a shorthand
@@ -1519,88 +1635,93 @@ mailagent: I like mailagent.  If I had known about mailagent when I first
 	There are often command aliases/synonyms to let you use Mailagent
 	commands in ZFilter if you came from that background.  They are 
 	in parentheses under the command name.
-	Items marked with a "-" are not directly supported.
+	Items marked with a "*" are not directly supported.
 	ZFilter and Mailagent treat the output of commands differently.
 	Mailagent mails it to the owner of the program, ZFilter stores it
 	in a variable called "result" and it is lost unless you explicitly 
 	do something with it.
 
-	Mailagent	Zfilter		Notes
+	Mailagent	Zfilter		- Notes
 	-----------------------------------------------------------------
-	-		addlist		Add to list.  Can be emulated in 
-					Mailagent by server commands in
-					the message body if present.
-	annotate	addheader	
-			(or annotate)	
-	after		-		Runs a process after (x) time
+	*		addlist		- Add to list.  Can be emulated in 
+					- Mailagent by server commands in
+					- the message body if present.
+	annotate	addheader	- (or annotate)	
+	after		at/non-relative - Runs a command after a certain
+                                        - time.  (non-relative only)
+        * 		after		- ZFilter's after command runs
+                                        - another command either immediately
+                                        - or after a specified time.
 	apply		process		
 	assign		set
-	back		run + take	Runs a program & takes actions
-				     	based on it's output
-	beep		page 		(as an argument; also annoy, or biff)
-	begin		n/a		Enters a new state
-	biff		page		(or annoy, or biff)
+	back		run + take	- Runs a program & takes actions
+				     	- based on it's output
+	beep		page 		- (as an argument; also annoy, or biff)
+	begin		n/a		- Enters a new state
+	biff		page		- (or annoy, or biff)
 	bounce		bounce
-	-		create
-	-		comment
+	*		create
+	*		comment
 	do		do  		
-	-		dec
+	*		dec
 	delete		delete
-	feed		xmessage	(or feed)
+	feed		xmessage	- (or feed)
 	forward		forward		
 	give		pipecontent
-	-		inc	
+	*		inc	
 	leave		leave/ignore	
-	-		maillist	see "addlist"
-	macro		-		Lets you create a macro
+	*		maillist	- see "addlist"
+	macro		*		- Lets you create a macro
 	message		canned
-	-		name
-	nop		(leave empty)	No-operation.  To not take 
-					actions to an "if" statement, 
-					simply do not put any after it.
+	*		name
+	nop		(leave empty)	- No-operation.  To not take 
+					- actions to an "if" statement, 
+					- simply do not put any after it.
+                                        - (or nop)
 	notify		mail
-	once		(default)	Only take the command once
-	pass		xcontent	(or pass)
-	-		pdec
-	-		pinc
+	once		(default)	- Only take the command once
+	pass		xcontent	- (or pass)
+	*		pdec
+	*		pinc
 	pipe		pipe
 	post		post
-	process		n/a		Process and execute Mailagent
-					commands.
-	protect		mode		(or protect)
-	purify		xheader		(or purify)
-	-		remlist		See "addlist"
-	queue		n/a		Re-Queue the message to process
-					later.
-	record		n/a		Record message, switch to SEEN
-					mode if it has been recorded before.
-	reject		-		Abort the current action and
-					reset to default action.
-	require		load		(or get, or require)
-	restart		-		Restart rule file
+	process		n/a		- Process and execute Mailagent
+					- commands.
+	protect		mode		- (or protect)
+	purify		xheader		- (or purify)
+	*		remlist		- See "addlist"
+	queue		n/a		- Re-Queue the message to process
+					- later.
+	record		n/a		- Record message, switch to SEEN
+					- mode if it has been recorded before.
+	reject		*		- Abort the current action and
+					- reset to default action.
+	require		load		- (or get, or require)
+	restart		*		- Restart rule file
 	resync		resync
-	run 		execute		(or run)
+	run 		execute		- (or run)
 	save		save
-	select		-		Execute command only within given
-					time period.
-	server		n/a		Treat message body as server
-					commands.
-	split		-		Split up the message into several
+	select		during		- (or select)
+	server		n/a		- Treat message body as server
+					- commands.
+	split		*		- Split up the message into several
 	store		savecopy	
 	strip		remheader
 	subst		subst
 	tr		xlate
-	umask		umask		Changes process's umask
-	unique		unique		(and the var. "unique" as a shortcut)
-	vacation	set,canned	Turns vacation mode on and off
-					(when on, tells people who write
-					to you that you're on vaction)
+	umask		umask		- Changes process's umask
+	unique		unique		- (and the var. "unique" as a shortcut)
+	vacation	set,canned	- Turns vacation mode on and off
+					- (when on, tells people who write
+					- to you that you're on vaction)
 	write		saveover	
-	-		zap
+	*		zap
 	
 --------------------------------------------------------------------------
 12. Modification history
 
+ver. 2.8: Added at, after, during, nop, dnsbl commands.  Tightened code to be
+          a bit nicer to PERL 5.
 ver. 2.7: Experimental "-U (user)" command.  This will obviously only work
           if you're running as root (short of serious security holes in your
 	  system).  Added the "ip" variable and resolving the IP address of
@@ -1652,7 +1773,7 @@ ver. 2.4: Reorganized several of ZFilter's commands and functions
 	  applications of "post".  Revision to some parts of this README
 	  to make them more understandable.
 ver. 2.3: Added xheader, xcontent, xmessage, resync, umask and mode
-	  Bugfixes for all the 2.2 commands.  :)
+	  Bugfixes for all the 2.2 commands.  
 ver. 2.2: Added bounce, xlate, addheader, remheader, setheader, take
 	  keepheader, post, process, saveover and "bounce" as a separate
 	  command.  Bugfixes.
@@ -1671,7 +1792,7 @@ ver. 2.0: Added minor listserv functions.  ZFilter can now add and
 	  rules file and from the command line.  Also supports displaying
 	  lists from the command line and searching lists for a user.
 	  Added -u for syntax help.  Added -? -h -H and /? as synonyms
-	  for -u just in case.  Did I mention I'm paranoid? :)
+	  for -u just in case.  Did I mention I'm paranoid? 
 ver. 1.9: Minor bugfix for log-clearing.  Added "bounce" as a synonym
 	  for "forward".  Added the "name" command.  ZFilter now sets
 	  the status of all the messages it parses to "N" (so that if
@@ -1689,8 +1810,8 @@ ver. 1.6: Scrapped the old expression parser and did a new one.
 	  BUT it will take sub-expressions in parentheses, and it fixed
           one or two bugs in the old one dealing with "never" and "always"
 	  (so embarrasing too... they were supposed to be easy!)
-	  And it's marginally more idiot-proof.  BIG CHANGE: The parser
-	  allows you to compare variables like this: "if ( a > b ) ..."
+	  And it's marginally more idiot-proof.  BIG CHANGE; The parser
+	  allows you to compare variables like this; "if ( a > b ) ..."
 	  which can be nice, BUT it also means that when you do a 
 	  regex search ( like when you use ? or # in an "if" statement)
 	  you MUST put quotes around text you want to find if it isn't
@@ -1700,13 +1821,21 @@ ver. 1.6: Scrapped the old expression parser and did a new one.
 				"b" appear in variable "a".
 	  if( a ? "b" ) ...   - Searches to see if the letter "b" appears
 				in the variable "a".
+
 ver. 1.41: Precious little.  Bugfix, added "chain-detection".
+
 prior to ver. 1.41: Whatever I did is lost to history...
 
 ----
 (C) 1996, 1997 Steve Zeck (viper@kuentos.guam.net)
 Free software, anyone may modify and re-distribute as much as they wish
-without express consent from me as long as I am still attributed in the
-source as the original author and the notice at the beginning of the 
-script is left unchanged.  Modifiers must also put their eMail address
-in the source for Zfilter in the place reserved for that purpose.
+without express consent from me as long as the following conditions
+are met:
+ (1) I am still attributed in the source as the original author and the 
+     notice at the beginning of the script is left unchanged.  
+ (2) Any person making modifications adds their eMail address in the
+     source code for Zfilter in the place reserved for that purpose.
+ (3) This software, and any derivative works are distributed free of
+     charge, or made available, without fee, to the general public.
+
+
